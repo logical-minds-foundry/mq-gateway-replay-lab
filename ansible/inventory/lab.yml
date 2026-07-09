@@ -1,0 +1,17 @@
+---
+# Inventory for applying gw-queues against the RUNNING lab queue manager.
+#
+# Provide the live values at apply time — there are deliberately no misleading
+# defaults for the queue manager, so a mis-targeted apply fails loudly rather
+# than silently hitting the wrong box (parasite / boundary rule):
+#   ansible-playbook -i inventory/lab.yml ../site.yml -e qmgr_name=<LAB_QM>
+#
+# ansible_host defaults to localhost on the assumption the playbook runs on the
+# active queue-manager node inside the shared lab VM; override lab_qm_host if the
+# active instance is elsewhere in the 3+3.
+gateway_qm:
+  hosts:
+    lab_qm:
+      ansible_host: "{{ lab_qm_host | default('localhost') }}"
+  vars:
+    counterparty: CPB

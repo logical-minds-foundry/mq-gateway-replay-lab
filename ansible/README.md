@@ -1,0 +1,39 @@
+# Ansible — gateway experiment queue provisioning
+
+Adds the experiment's **own** four queues to the lab's **running** queue manager,
+so the `gwlab` demo has somewhere to put and get. Nothing the lab owns is created
+or modified — the role declare-and-verifies the queue manager and creates only
+`GW.<counterparty>.*` (parasite / boundary rule).
+
+## What it creates
+
+For counterparty tag `CPB` (the default):
+
+| Queue | Role |
+|-------|------|
+| `GW.CPB.SEND` | Outbound to the (simulated) counterparty; the responder drains it |
+| `GW.CPB.SEND.ARCHIVE` | Outbound archive — the replay copy |
+| `GW.CPB.REPLY` | Confirmations arrive here from the responder |
+| `GW.CPB.REPLY.ARCHIVE` | Inbound archive — the authoritative "processed" ledger |
+
+All four are `QLOCAL`, `DEFPSIST(YES)` (persistent). This is the **self-contained
+single-queue-manager demo topology**: the responder plays the counterparty
+locally, so no channels or remote queue-manager wiring is touched.
+
+## Apply (against the running lab)
+
+From inside the shared lab VM, on/reaching the active queue-manager node:
+
+```bash
+cd ansible
+ansible-playbook -i inventory/lab.yml site.yml -e qmgr_name=<LAB_QM>
+```
+
+- `qmgr_name` is **required** — a missing value fails loudly by design.
+- The play is **idempotent**: re-running is a no-op (existing queues report
+  "already defined", `rc 10`, and are left as-is).
+- **Cold-rebuild safe**: after a lab rebuild, re-apply to re-establish the queues
+  in one pass.
+
+> The exact active-node host and queue-manager name are confirmed against the
+> live 3+3 at apply time; set `lab_qm_host` / `qmgr_name` accordingly.
