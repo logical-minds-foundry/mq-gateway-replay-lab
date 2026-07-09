@@ -1,0 +1,12 @@
+---
+# Provision the gateway experiment's own queues on the lab's running queue
+# manager. This adds ONLY the experiment's GW.* queues; it declare-and-verifies
+# the queue manager and never mutates anything the lab owns (parasite rule).
+#
+# Apply against the live lab (see ansible/README.md):
+#   ansible-playbook -i inventory/lab.yml site.yml -e qmgr_name=<LAB_QM>
+- name: Provision the gateway experiment's own queues
+  hosts: gateway_qm
+  gather_facts: false
+  roles:
+    - gw-queues

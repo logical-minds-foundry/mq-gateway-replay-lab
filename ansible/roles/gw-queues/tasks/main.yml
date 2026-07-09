@@ -1,0 +1,30 @@
+---
+- name: Assert the target queue manager name was provided
+  ansible.builtin.assert:
+    that:
+      - qmgr_name is defined
+      - qmgr_name | length > 0
+    fail_msg: >-
+      qmgr_name must be set to the lab's running queue manager. gw-queues owns
+      only its own GW.* queues; it never creates or mutates the queue manager.
+
+- name: Verify the queue manager is running (declare-and-verify; never create it)
+  ansible.builtin.command: /opt/mqm/bin/dspmq -m {{ qmgr_name }}
+  become: true
+  become_user: mqm
+  register: dspmq
+  changed_when: false
+  failed_when: dspmq.rc != 0 or 'Running' not in dspmq.stdout
+
+- name: Define the experiment's own round-trip queues (idempotent; GW.* only)
+  ansible.builtin.shell: |
+    set -o pipefail
+    printf 'DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE\n' {{ gw_queues | join(' ') }} \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_queues
+  changed_when: "'AMQ8005' in define_queues.stdout"
+  failed_when: define_queues.rc not in [0, 10]

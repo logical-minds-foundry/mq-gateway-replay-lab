@@ -1,0 +1,22 @@
+---
+# The counterparty tag selecting the queue set (matches gwlab's QueueSet).
+counterparty: CPB
+
+# The four queues this experiment OWNS. Per the parasite / boundary rule these
+# are the ONLY MQ objects gw-queues creates. The queue manager and everything
+# else belong to the lab and are declare-and-verified, never mutated.
+#
+# Self-contained demo topology: all four are QLOCAL on the lab's running queue
+# manager. The gateway PUTs to SEND (+ SEND.ARCHIVE) in one unit of work; the
+# responder — which plays the counterparty — GETs from SEND and PUTs its
+# confirmation to REPLY; the gateway GETs from REPLY (+ copies to REPLY.ARCHIVE)
+# in one unit of work. Reconciliation browses the two .ARCHIVE queues only.
+gw_queues:
+  - "GW.{{ counterparty }}.SEND"
+  - "GW.{{ counterparty }}.SEND.ARCHIVE"
+  - "GW.{{ counterparty }}.REPLY"
+  - "GW.{{ counterparty }}.REPLY.ARCHIVE"
+
+# qmgr_name is intentionally left unset — it must be provided at apply time (the
+# lab's running queue manager). A missing value fails loudly (see tasks), so a
+# mis-targeted apply never silently hits the wrong box.
