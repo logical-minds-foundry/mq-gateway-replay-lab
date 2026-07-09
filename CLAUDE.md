@@ -10,6 +10,42 @@ This file provides guidance to Claude Code when working in this repository.
 vrg-container-run -- vrg-validate
 ```
 
+## Project purpose
+
+This repo is an **independent lab experiment** demonstrating resilient,
+replayable MQ message-gateway patterns — an MQ-native archive (a
+two-put-under-syncpoint outbound copy + a mirrored inbound copy) with
+browse-based reconciliation and observability that proves "replay the
+unconfirmed" against a live HA/DR queue manager.
+
+It bolts onto the **running queue-manager infrastructure of
+`mq-resiliency-lab-for-linux`** — it owns no VM (see `[vm] shared_from` in
+`vergil.toml`); its sessions run inside that lab's box. The authoritative
+design lives in `logical-minds-foundry/.github` at
+`epics/49-resilient-mq-gateway/{spec.md,plan.md}` (epic #49).
+
+## Hard rules
+
+- **Anonymization (absolute).** No employer/client-identifiable content in any
+  file, commit, diagram, or dummy data — this is a *generic trading back-office
+  gateway* problem. Generic vocabulary only: "the application team", "the
+  app-team lead", "the alternate log hosts", "Counterparty A/B/…", invented
+  queue/host names. This repo is **private and client-adjacent** — deliberately
+  **not** part of the public `mq-resiliency-*` OSS family.
+- **Parasite / boundary rule.** Configure **only what this repo owns** (its own
+  queues, its own apps) and **declare-and-verify** what it doesn't (the QM, the
+  counterparty). Never mutate the lab's config; never restart the lab's QM. A
+  failed precondition is a loud signal, not a silent fix.
+- **Reuse none of the lab's tooling.** `mqlab` and the HA/DR `validate`
+  framework stay the lab's. This repo ships its **own** small CLI (`gwlab`) and
+  its own responder app.
+- **MQ-native & minimalist.** The two-put-under-syncpoint is the mechanism;
+  streaming queues are deliberately not used; AMS is out. No new vendor
+  products, no "magic" exits unless proven.
+- **The one-UOW rule.** Outbound: the archive PUT shares the transmit PUT's unit
+  of work, with the **same MsgId** on both. Never two separate commits — a crash
+  between them is silent loss.
+
 <!-- vergil:template:claude-md:begin -->
 ## Memory management
 

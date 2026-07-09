@@ -15,3 +15,10 @@ docs = false
 
 [dependencies]
 vergil = "v2.1"
+
+[vm]
+# This repo owns no VM. Its sessions run inside the mq-resiliency-lab-for-linux
+# box — the running queue manager + counterparty this experiment bolts onto.
+# `shared_from` must be the ONLY key under [vm] (mutually exclusive with any
+# footprint/package key). See vergil-tooling `docs/site/docs/reference/vm-spec.md`.
+shared_from = "logical-minds-foundry/mq-resiliency-lab-for-linux"
