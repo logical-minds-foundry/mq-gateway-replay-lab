@@ -39,6 +39,12 @@ warn_unused_configs = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+[tool.coverage.run]
+# The pymqi adapter needs the MQ client libraries, so it cannot run in the
+# validation container. It is verified end-to-end on the live queue manager
+# (see demo/live_demo.py + the issue evidence), not by unit tests.
+omit = ["src/gwlab/pymqi_messaging.py"]
+
 [tool.coverage.report]
 exclude_lines = [
     "if __name__ == .__main__.",
