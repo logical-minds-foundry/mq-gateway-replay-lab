@@ -6,6 +6,9 @@ license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []
 
+[project.scripts]
+gwlab = "gwlab.cli:main"
+
 [dependency-groups]
 dev = ["ruff", "mypy", "ty", "pytest", "pytest-cov", "pip-audit", "pip-licenses"]
 
