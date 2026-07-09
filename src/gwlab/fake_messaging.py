@@ -48,3 +48,8 @@ class FakeMessaging:
     def backout(self) -> None:
         self._staged_puts.clear()
         self._staged_gets.clear()
+
+    def clear(self, queue: str) -> int:
+        removed = len(self._committed.get(queue, []))
+        self._committed[queue] = []
+        return removed
