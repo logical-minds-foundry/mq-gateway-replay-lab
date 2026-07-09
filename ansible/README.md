@@ -20,6 +20,14 @@ All four are `QLOCAL`, `DEFPSIST(YES)` (persistent). This is the **self-containe
 single-queue-manager demo topology**: the responder plays the counterparty
 locally, so no channels or remote queue-manager wiring is touched.
 
+The **archives are produced by the queue manager**, not the app: `SEND` and
+`REPLY` are configured `STREAMQ(<their>.ARCHIVE) STRMQOS(MUSTDUP)`, so every
+message is atomically copied to its archive with the same MsgId and no
+application logic (the primary archive; research `#54`). `MUSTDUP` gives the
+both-or-neither guarantee — if the copy cannot be written, the original put
+fails. The app-level two-put / get-copy in `gwlab` is the documented fallback for
+queue managers where streaming is not configured.
+
 ## Apply (against the running lab)
 
 From inside the shared lab VM, on/reaching the active queue-manager node:
