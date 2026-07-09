@@ -21,9 +21,22 @@ class FakeMessaging:
         self._committed: dict[str, list[Message]] = {}
         self._staged_puts: list[tuple[str, Message]] = []
         self._staged_gets: list[tuple[str, Message]] = []
+        self._streams: dict[str, str] = {}
+
+    def configure_stream(self, source: str, target: str) -> None:
+        """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
+
+        Every put to ``source`` also stages a copy to ``target`` in the **same**
+        unit of work (both commit or neither), preserving the MsgId — the
+        queue-manager-native archive, produced with no application logic.
+        """
+        self._streams[source] = target
 
     def put(self, queue: str, message: Message) -> None:
         self._staged_puts.append((queue, message))
+        target = self._streams.get(queue)
+        if target is not None:
+            self._staged_puts.append((target, message))
 
     def get(self, queue: str) -> Message | None:
         taken = [m for q, m in self._staged_gets if q == queue]

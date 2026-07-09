@@ -2,20 +2,32 @@
 # The counterparty tag selecting the queue set (matches gwlab's QueueSet).
 counterparty: CPB
 
+# Named queues (match gwlab's QueueSet).
+q_send: "GW.{{ counterparty }}.SEND"
+q_send_archive: "GW.{{ counterparty }}.SEND.ARCHIVE"
+q_reply: "GW.{{ counterparty }}.REPLY"
+q_reply_archive: "GW.{{ counterparty }}.REPLY.ARCHIVE"
+
 # The four queues this experiment OWNS. Per the parasite / boundary rule these
-# are the ONLY MQ objects gw-queues creates. The queue manager and everything
+# are the ONLY MQ objects gw-queues creates; the queue manager and everything
 # else belong to the lab and are declare-and-verified, never mutated.
 #
-# Self-contained demo topology: all four are QLOCAL on the lab's running queue
-# manager. The gateway PUTs to SEND (+ SEND.ARCHIVE) in one unit of work; the
-# responder — which plays the counterparty — GETs from SEND and PUTs its
-# confirmation to REPLY; the gateway GETs from REPLY (+ copies to REPLY.ARCHIVE)
-# in one unit of work. Reconciliation browses the two .ARCHIVE queues only.
+# The archives are produced by the QUEUE MANAGER via streaming queues
+# (STRMQOS(MUSTDUP)): every put to SEND is atomically copied to SEND.ARCHIVE, and
+# every confirmation arriving on REPLY is copied to REPLY.ARCHIVE — with no
+# application logic (the primary archive; research #54). The app-level
+# two-put / get-copy is the fallback (gwlab.outbound / gwlab.inbound).
+# Reconciliation browses the .ARCHIVE queues only.
 gw_queues:
-  - "GW.{{ counterparty }}.SEND"
-  - "GW.{{ counterparty }}.SEND.ARCHIVE"
-  - "GW.{{ counterparty }}.REPLY"
-  - "GW.{{ counterparty }}.REPLY.ARCHIVE"
+  - "{{ q_send }}"
+  - "{{ q_send_archive }}"
+  - "{{ q_reply }}"
+  - "{{ q_reply_archive }}"
+
+# Each live queue MUSTDUP-copies to its archive — [live_queue, archive_queue].
+gw_streams:
+  - ["{{ q_send }}", "{{ q_send_archive }}"]
+  - ["{{ q_reply }}", "{{ q_reply_archive }}"]
 
 # qmgr_name is intentionally left unset — it must be provided at apply time (the
 # lab's running queue manager). A missing value fails loudly (see tasks), so a

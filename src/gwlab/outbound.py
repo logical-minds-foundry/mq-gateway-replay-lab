@@ -1,4 +1,13 @@
-"""Outbound path: the atomic two-put (transmit + archive) in one unit of work."""
+"""Outbound path.
+
+**Primary:** a single put to the transmit queue; the queue manager writes the
+atomic, MsgId-preserving archive copy via a streaming queue
+(``STREAMQ … STRMQOS(MUSTDUP)`` configured in Ansible) — QM-native, base-licensed,
+zero application logic (research task #54).
+
+**Fallback:** where streaming is unavailable, ``send_via_two_put`` makes the two
+puts explicitly in one unit of work — the glass-box equivalent.
+"""
 
 from __future__ import annotations
 
@@ -12,14 +21,23 @@ if TYPE_CHECKING:
 
 
 def send(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> bytes:
-    """PUT the message to the transmit queue and the archive in one unit of work.
+    """Primary: single put to the transmit queue; the streaming queue produces
+    the archive copy (same MsgId, same unit of work) with no application logic.
 
-    The gateway assigns the MsgId (R9), so both copies carry the **same** MsgId —
-    the key the counterparty echoes back as the reply's CorrelId, and the key
-    reconciliation matches on. The two PUTs share one unit of work: either both
-    commit or neither (invariant I1 — no message reaches the counterparty without
-    a durable archive record; the fatal "sent but unarchived" state is
-    impossible because archiving rides the send's commit).
+    The gateway assigns the MsgId (R9). The archive is guaranteed because the
+    stream is configured ``MUSTDUP``: if the copy cannot be written, the put
+    itself fails, so there is no "sent but unarchived" state (I1) — enforced by
+    the queue manager, not the app.
+    """
+    messaging.put(queues.send, Message(body=body, msg_id=msg_id))
+    messaging.commit()
+    return msg_id
+
+
+def send_via_two_put(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> bytes:
+    """Fallback: PUT to the transmit queue *and* the archive queue in one unit of
+    work, with the same MsgId. The explicit, in-app equivalent of the streaming
+    archive, for queue managers where streaming is not configured.
     """
     message = Message(body=body, msg_id=msg_id)
     messaging.put(queues.send, message)

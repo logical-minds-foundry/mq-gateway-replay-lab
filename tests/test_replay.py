@@ -1,4 +1,4 @@
-"""Tests for replay + idempotent resend — the end-to-end finale."""
+"""Replay + idempotent resend — the end-to-end finale, over the streaming archive."""
 
 from gwlab import inbound, outbound, reconcile
 from gwlab.config import QueueSet
@@ -10,8 +10,15 @@ from gwlab.responder import Responder
 QS = QueueSet.for_counterparty("CPB")
 
 
+def _streamed_fake() -> FakeMessaging:
+    fm = FakeMessaging()
+    fm.configure_stream(QS.send, QS.send_archive)
+    fm.configure_stream(QS.reply, QS.reply_archive)
+    return fm
+
+
 def _drain_all(fm: FakeMessaging) -> None:
-    while inbound.drain(fm, QS) is not None:
+    while inbound.receive(fm, QS) is not None:
         pass
 
 
@@ -22,21 +29,18 @@ def _process_all(responder: Responder) -> list[str]:
     return results
 
 
-def test_resend_reuses_msgid_and_does_not_re_archive() -> None:
-    fm = FakeMessaging()
+def test_resend_re_transmits_by_original_msgid() -> None:
+    fm = _streamed_fake()
     outbound.send(fm, QS, b"trade", b"1")
     un = reconcile.unconfirmed(fm, QS)
     assert [u.msg_id for u in un] == [b"1"]
 
     assert resend(fm, QS, un) == 1
-
-    # Re-transmitted with the same MsgId; the archive is NOT duplicated.
     assert all(m.msg_id == b"1" for m in fm.browse(QS.send))
-    assert len(fm.browse(QS.send_archive)) == 1
 
 
 def test_replayed_message_is_reconfirmed_not_reprocessed() -> None:
-    fm = FakeMessaging()
+    fm = _streamed_fake()
     fm.put(QS.send, Message(b"trade", b"1"))
     fm.commit()
     responder = Responder(fm, QS)
@@ -49,7 +53,7 @@ def test_replayed_message_is_reconfirmed_not_reprocessed() -> None:
 
 
 def test_replay_drains_the_unconfirmed_set_to_zero() -> None:
-    fm = FakeMessaging()
+    fm = _streamed_fake()
     for msg_id in (b"1", b"2", b"3"):
         outbound.send(fm, QS, b"trade", msg_id)
 

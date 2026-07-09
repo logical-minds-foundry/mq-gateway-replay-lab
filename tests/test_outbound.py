@@ -1,27 +1,46 @@
-"""Tests for the outbound atomic two-put."""
+"""Tests for the outbound path — streaming primary + two-put fallback."""
 
 import pytest
 
 from gwlab.config import QueueSet
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.messaging import Message
-from gwlab.outbound import send
+from gwlab.outbound import send, send_via_two_put
 
 QS = QueueSet.for_counterparty("CPB")
 
 
-def test_send_puts_the_same_msgid_to_both_queues() -> None:
+def _streamed() -> FakeMessaging:
     fm = FakeMessaging()
-    returned = send(fm, QS, body=b"trade-1", msg_id=b"id-1")
-    assert returned == b"id-1"
-    sent = fm.browse(QS.send)
-    archived = fm.browse(QS.send_archive)
-    assert [m.msg_id for m in sent] == [b"id-1"]
-    assert [m.msg_id for m in archived] == [b"id-1"]
-    assert sent[0].body == archived[0].body == b"trade-1"
+    fm.configure_stream(QS.send, QS.send_archive)
+    return fm
 
 
-def test_send_is_atomic_a_failed_second_put_commits_neither() -> None:
+def test_send_single_put_archives_via_stream_with_same_msgid() -> None:
+    fm = _streamed()
+    assert send(fm, QS, body=b"trade-1", msg_id=b"id-1") == b"id-1"
+    assert [m.msg_id for m in fm.browse(QS.send)] == [b"id-1"]
+    assert [m.msg_id for m in fm.browse(QS.send_archive)] == [b"id-1"]
+
+
+def test_streamed_copy_rides_the_send_uow() -> None:
+    # MUSTDUP: the copy is staged in the send's unit of work, so a backout before
+    # commit discards both — the both-or-neither guarantee, QM-enforced.
+    fm = _streamed()
+    fm.put(QS.send, Message(b"t", b"id-x"))
+    fm.backout()
+    assert fm.browse(QS.send) == []
+    assert fm.browse(QS.send_archive) == []
+
+
+def test_two_put_fallback_writes_both_queues() -> None:
+    fm = FakeMessaging()  # no stream configured
+    assert send_via_two_put(fm, QS, body=b"trade-3", msg_id=b"id-3") == b"id-3"
+    assert [m.msg_id for m in fm.browse(QS.send)] == [b"id-3"]
+    assert [m.msg_id for m in fm.browse(QS.send_archive)] == [b"id-3"]
+
+
+def test_two_put_fallback_is_atomic() -> None:
     class FailingSecondPut(FakeMessaging):
         def __init__(self) -> None:
             super().__init__()
@@ -35,9 +54,6 @@ def test_send_is_atomic_a_failed_second_put_commits_neither() -> None:
 
     fm = FailingSecondPut()
     with pytest.raises(RuntimeError, match="boom"):
-        send(fm, QS, body=b"trade-2", msg_id=b"id-2")
-
-    # The first PUT was only staged, and commit() never ran — so nothing is
-    # visible on either queue. No "sent but unarchived" state (I1).
+        send_via_two_put(fm, QS, body=b"t", msg_id=b"id-4")
     assert fm.browse(QS.send) == []
     assert fm.browse(QS.send_archive) == []
