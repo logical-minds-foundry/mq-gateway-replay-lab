@@ -1,16 +1,23 @@
-"""Code-templated Grafana board for one counterparty's gateway flow.
+"""Code-templated Grafana board for one counterparty's gateway flow on one QM.
 
-Built the lab's way: the queue manager is a **parameter, never a literal** (pass
-whichever QM is up, from one source), and the queue names come from
-``QueueSet`` — so re-generating against a different arm simply produces the board
-for that arm's QM.
+Built the lab's way and faithful to the Phase-1 observability mockup: an
+**extension of the messaging-flow board**, not a standalone page. Sections, top to
+bottom, mirror the mockup:
 
-Every panel comes from the **standard IBM MQ Prometheus exporter** (the archives
-are ordinary MQ queues it already scrapes), so most of the value needs no
-bespoke exporter: sent-vs-confirmed depth, send/confirm rate (the first
-derivative), unconfirmed backlog, oldest-unconfirmed age, average time on the
-reply queue, and CAPEXPRY expiry. The *which specific trades are unconfirmed*
-table needs the gwlab reconcile exporter and is a follow-on.
+1. a context header (which QM, which counterparty);
+2. the **base layer** — queue-manager health and the live transmit/reply queue
+   depths, read from the standard IBM MQ exporter (``ibmmq_*``), the same series
+   the lab's per-QM board uses;
+3. the **archive-reconciliation extension** — KPI tiles (sent, confirmed,
+   unconfirmed, mean confirm latency), the hero *unconfirmed-backlog* chart and a
+   *send-vs-confirm rate* companion, the *which-trades* unconfirmed-set table, and
+   the reconciliation *scan-cost* panels — read from the gwlab reconcile exporter
+   (``gwlab_*``).
+
+The queue manager is a **parameter, never a literal** (pass whichever QM is up),
+queue names come from ``QueueSet``, so re-generating against another arm produces
+that arm's board. ``gwlab_*`` series are matched on both ``qmgr`` (applied to the
+gwlab exporter's scrape target at deploy time) and ``counterparty``.
 """
 
 from __future__ import annotations
@@ -26,38 +33,99 @@ def _ds(ds_uid: str) -> dict[str, str]:
     return {"type": "prometheus", "uid": ds_uid}
 
 
-def _q(metric: str, qmgr: str, queue: str) -> str:
+def _ibmmq(metric: str, qmgr: str, queue: str) -> str:
     return f'max(ibmmq_queue_{metric}{{qmgr="{qmgr}",queue="{queue}"}})'
 
 
-def _rate(metric: str, qmgr: str, queue: str) -> str:
+def _ibmmq_rate(metric: str, qmgr: str, queue: str) -> str:
     return f'sum(rate(ibmmq_queue_{metric}{{qmgr="{qmgr}",queue="{queue}"}}[5m]))'
 
 
-def _target(ref: str, expr: str, legend: str, ds_uid: str) -> dict[str, Any]:
-    return {"refId": ref, "datasource": _ds(ds_uid), "expr": expr, "legendFormat": legend}
+def _gwlab(metric: str, qmgr: str, counterparty: str) -> str:
+    return f'max(gwlab_{metric}{{qmgr="{qmgr}",counterparty="{counterparty}"}})'
 
 
-def _panel(
+def _target(ref: str, expr: str, legend: str, ds_uid: str, **extra: Any) -> dict[str, Any]:
+    target: dict[str, Any] = {
+        "refId": ref,
+        "datasource": _ds(ds_uid),
+        "expr": expr,
+        "legendFormat": legend,
+    }
+    target.update(extra)
+    return target
+
+
+def _grid(x: int, y: int, w: int, h: int) -> dict[str, int]:
+    return {"x": x, "y": y, "w": w, "h": h}
+
+
+def _text(pid: int, grid: dict[str, int], markdown: str) -> dict[str, Any]:
+    return {
+        "id": pid,
+        "type": "text",
+        "transparent": True,
+        "gridPos": grid,
+        "options": {"mode": "markdown", "content": markdown},
+    }
+
+
+def _stat(
     pid: int,
     title: str,
-    ptype: str,
-    grid: tuple[int, int, int, int],
+    grid: dict[str, int],
+    expr: str,
+    ds_uid: str,
+    *,
+    unit: str | None = None,
+    mappings: list[dict[str, Any]] | None = None,
+    thresholds: list[dict[str, Any]] | None = None,
+    description: str = "",
+) -> dict[str, Any]:
+    defaults: dict[str, Any] = {"mappings": mappings or []}
+    if unit is not None:
+        defaults["unit"] = unit
+    if thresholds is not None:
+        defaults["thresholds"] = {"mode": "absolute", "steps": thresholds}
+    return {
+        "id": pid,
+        "type": "stat",
+        "title": title,
+        "description": description,
+        "gridPos": grid,
+        "datasource": _ds(ds_uid),
+        "fieldConfig": {"defaults": defaults, "overrides": []},
+        "options": {
+            "colorMode": "background" if (mappings or thresholds) else "value",
+            "graphMode": "none",
+            "reduceOptions": {"calcs": ["lastNotNull"]},
+            "textMode": "value",
+        },
+        "targets": [_target("A", expr, title, ds_uid)],
+    }
+
+
+def _timeseries(
+    pid: int,
+    title: str,
+    grid: dict[str, int],
     targets: list[dict[str, Any]],
     ds_uid: str,
-    description: str,
-    unit: str | None,
+    *,
+    unit: str | None = None,
+    description: str = "",
 ) -> dict[str, Any]:
-    x, y, w, h = grid
-    defaults: dict[str, Any] = {"custom": {"drawStyle": "line", "fillOpacity": 10, "lineWidth": 2}}
+    defaults: dict[str, Any] = {
+        "custom": {"drawStyle": "line", "fillOpacity": 12, "lineWidth": 2},
+    }
     if unit is not None:
         defaults["unit"] = unit
     return {
         "id": pid,
-        "type": ptype,
+        "type": "timeseries",
         "title": title,
         "description": description,
-        "gridPos": {"x": x, "y": y, "w": w, "h": h},
+        "gridPos": grid,
         "datasource": _ds(ds_uid),
         "fieldConfig": {"defaults": defaults, "overrides": []},
         "options": {
@@ -68,90 +136,213 @@ def _panel(
     }
 
 
+def _table(
+    pid: int, title: str, grid: dict[str, int], expr: str, ds_uid: str, description: str
+) -> dict[str, Any]:
+    """A table of the unconfirmed set: one row per ``gwlab_unconfirmed_message`` series.
+
+    ``labelsToFields`` turns the per-message labels (msgid, sent, state) into
+    columns and the series value (age in seconds) into ``Age (s)``; ``organize``
+    drops the plumbing labels and names the columns.
+    """
+    return {
+        "id": pid,
+        "type": "table",
+        "title": title,
+        "description": description,
+        "gridPos": grid,
+        "datasource": _ds(ds_uid),
+        "fieldConfig": {"defaults": {"custom": {"align": "left"}}, "overrides": []},
+        "options": {"showHeader": True},
+        "targets": [_target("A", expr, "", ds_uid, format="table", instant=True)],
+        "transformations": [
+            {"id": "labelsToFields", "options": {}},
+            {
+                "id": "organize",
+                "options": {
+                    "excludeByName": {
+                        "Time": True,
+                        "__name__": True,
+                        "counterparty": True,
+                        "qmgr": True,
+                        "instance": True,
+                        "job": True,
+                    },
+                    "renameByName": {
+                        "msgid": "Correlation key (MsgId)",
+                        "sent": "Sent",
+                        "state": "State",
+                        "Value": "Age (s)",
+                    },
+                    "indexByName": {"msgid": 0, "sent": 1, "Value": 2, "state": 3},
+                },
+            },
+        ],
+    }
+
+
+_QM_STATUS_MAPPINGS: list[dict[str, Any]] = [
+    {"type": "value", "options": {"2": {"text": "RUNNING", "color": "green", "index": 0}}},
+    {"type": "value", "options": {"1": {"text": "STARTING", "color": "yellow", "index": 1}}},
+    {"type": "special", "options": {"match": "null", "result": {"text": "NO DATA", "index": 2}}},
+]
+_BACKLOG_THRESHOLDS: list[dict[str, Any]] = [
+    {"color": "green", "value": None},
+    {"color": "yellow", "value": 1},
+    {"color": "red", "value": 100},
+]
+
+
 def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") -> dict[str, Any]:
     """Return the Grafana dashboard dict for one counterparty on ``qmgr``.
 
     ``qmgr`` is a parameter, never hardcoded — pass whichever queue manager is up.
     """
     qs = QueueSet.for_counterparty(counterparty)
-    backlog = f"{_q('depth', qmgr, qs.send_archive)} - {_q('depth', qmgr, qs.reply_archive)}"
+    header = (
+        f"### MQ Gateway · {counterparty} — outbound confirmations\n"
+        f"**Queue manager `{qmgr}`.** Base layer: the messaging-flow board "
+        f"(QM health + live queues). Extension below: archive reconciliation — a "
+        f"browse of the outbound/inbound archives, the live path untouched."
+    )
     panels = [
-        _panel(
-            1,
-            "Sent vs Confirmed (archive depth)",
-            "timeseries",
-            (0, 0, 12, 8),
+        _text(1, _grid(0, 0, 24, 3), header),
+        # --- base layer: QM health + live queue depths (standard ibmmq exporter) ---
+        _stat(
+            2,
+            "Queue manager",
+            _grid(0, 3, 8, 4),
+            f'max(ibmmq_qmgr_status{{qmgr="{qmgr}"}})',
+            ds_uid,
+            mappings=_QM_STATUS_MAPPINGS,
+            description="Queue-manager status from the standard exporter.",
+        ),
+        _stat(
+            3,
+            f"Transmit → {counterparty} (live depth)",
+            _grid(8, 3, 8, 4),
+            _ibmmq("depth", qmgr, qs.send),
+            ds_uid,
+            description="Depth of the live outbound queue — the hot path, not the archive.",
+        ),
+        _stat(
+            4,
+            f"Reply ← {counterparty} (live depth)",
+            _grid(16, 3, 8, 4),
+            _ibmmq("depth", qmgr, qs.reply),
+            ds_uid,
+            description="Depth of the live reply queue where confirmations arrive.",
+        ),
+        # --- extension: archive-reconciliation KPI tiles (gwlab exporter) ---
+        _stat(
+            5,
+            "Sent today",
+            _grid(0, 7, 6, 4),
+            _gwlab("sent", qmgr, counterparty),
+            ds_uid,
+            description="Current-day outbound archive count.",
+        ),
+        _stat(
+            6,
+            "Confirmed today",
+            _grid(6, 7, 6, 4),
+            _gwlab("confirmed", qmgr, counterparty),
+            ds_uid,
+            description="Matched on the inbound archive.",
+        ),
+        _stat(
+            7,
+            "Unconfirmed",
+            _grid(12, 7, 6, 4),
+            _gwlab("unconfirmed", qmgr, counterparty),
+            ds_uid,
+            thresholds=_BACKLOG_THRESHOLDS,
+            description="Sent but not yet confirmed — the backlog.",
+        ),
+        _stat(
+            8,
+            "Mean confirm latency",
+            _grid(18, 7, 6, 4),
+            _gwlab("confirm_latency_seconds", qmgr, counterparty),
+            ds_uid,
+            unit="s",
+            description="Mean time from send to confirmation, today.",
+        ),
+        # --- hero + rate ---
+        _timeseries(
+            9,
+            "Unconfirmed backlog over the day",
+            _grid(0, 11, 14, 8),
             [
-                _target("A", _q("depth", qmgr, qs.send_archive), "Sent (archive)", ds_uid),
-                _target("B", _q("depth", qmgr, qs.reply_archive), "Confirmed (archive)", ds_uid),
+                _target("A", _gwlab("unconfirmed", qmgr, counterparty), "Unconfirmed", ds_uid),
+                _target("B", _gwlab("unconfirmed_aged", qmgr, counterparty), "Aged", ds_uid),
             ],
             ds_uid,
-            "Both archives are ordinary MQ queues the standard exporter scrapes.",
-            None,
+            description="Sent minus confirmed, from archive reconciliation — the hero signal.",
         ),
-        _panel(
-            2,
-            "Send vs Confirm rate",
-            "timeseries",
-            (12, 0, 12, 8),
+        _timeseries(
+            10,
+            "Send vs confirm rate",
+            _grid(14, 11, 10, 8),
             [
-                _target("A", _rate("mqput_mqput1_count", qmgr, qs.send_archive), "Sent/s", ds_uid),
                 _target(
-                    "B", _rate("mqput_mqput1_count", qmgr, qs.reply_archive), "Confirmed/s", ds_uid
+                    "A",
+                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.send_archive),
+                    "Sent/s",
+                    ds_uid,
+                ),
+                _target(
+                    "B",
+                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.reply_archive),
+                    "Confirmed/s",
+                    ds_uid,
                 ),
             ],
             ds_uid,
-            "First derivative: the rate of puts to each archive.",
-            "reqps",
+            unit="reqps",
+            description="First derivative: put rate to each archive.",
         ),
-        _panel(
-            3,
-            "Unconfirmed backlog (sent - confirmed)",
-            "timeseries",
-            (0, 8, 12, 8),
-            [_target("A", backlog, "Unconfirmed", ds_uid)],
+        # --- which-trades table + scan cost ---
+        _table(
+            11,
+            "Unconfirmed set — which messages, not just how many",
+            _grid(0, 19, 16, 9),
+            f'gwlab_unconfirmed_message{{qmgr="{qmgr}",counterparty="{counterparty}"}}',
             ds_uid,
-            "The gap: climbs when confirmations are missing, drains on replay.",
-            None,
+            "Browse of the outbound archive, entries with no matching confirmation.",
         ),
-        _panel(
-            4,
-            "Oldest unconfirmed age",
-            "stat",
-            (12, 8, 6, 4),
-            [_target("A", _q("oldest_message_age", qmgr, qs.send_archive), "Oldest", ds_uid)],
+        _timeseries(
+            12,
+            "Reconciliation scan cost",
+            _grid(16, 19, 8, 5),
+            [
+                _target(
+                    "A",
+                    _gwlab("reconcile_scan_seconds", qmgr, counterparty),
+                    "Scan seconds",
+                    ds_uid,
+                )
+            ],
             ds_uid,
-            "Age of the oldest message still in the outbound archive.",
-            "s",
+            unit="s",
+            description="Wall-clock of the reconciliation pass — grows with the archive.",
         ),
-        _panel(
-            5,
-            "Avg time on reply queue",
-            "stat",
-            (18, 8, 6, 4),
-            [_target("A", _q("average_queue_time_seconds", qmgr, qs.reply), "Avg", ds_uid)],
+        _stat(
+            13,
+            "Headers scanned",
+            _grid(16, 24, 8, 4),
+            _gwlab("reconcile_scanned_headers", qmgr, counterparty),
             ds_uid,
-            "Mean time a confirmation waits before the gateway consumes it.",
-            "s",
-        ),
-        _panel(
-            6,
-            "Expired copies (CAPEXPRY retention)",
-            "stat",
-            (12, 12, 12, 4),
-            [_target("A", _q("expired_messages", qmgr, qs.send_archive), "Expired", ds_uid)],
-            ds_uid,
-            "Streamed copies discarded by the rolling CAPEXPRY TTL.",
-            None,
+            description="Size of the reconciliation work this pass.",
         ),
     ]
     return {
-        "uid": f"gw-{counterparty.lower()}",
-        "title": f"MQ Gateway - {counterparty} (archive reconciliation)",
-        "tags": ["mq-gateway", "gwlab", counterparty],
+        "uid": f"gw-{qmgr.lower()}-{counterparty.lower()}",
+        "title": f"MQ Gateway - {counterparty} on {qmgr} (archive reconciliation)",
+        "tags": ["mq-gateway", "gwlab", counterparty, qmgr],
         "timezone": "browser",
         "schemaVersion": _SCHEMA_VERSION,
         "refresh": "10s",
-        "time": {"from": "now-30m", "to": "now"},
+        "time": {"from": "now-12h", "to": "now"},
         "panels": panels,
     }
