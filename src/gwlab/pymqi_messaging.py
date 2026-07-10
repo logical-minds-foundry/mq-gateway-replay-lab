@@ -40,7 +40,24 @@ def _put_time(md: Any) -> datetime | None:
 class PyMqiMessaging:
     """A single reconnectable client connection to a real queue manager."""
 
-    def __init__(self, qmgr_name: str, conn_name: str, channel: str) -> None:
+    def __init__(
+        self,
+        qmgr_name: str,
+        conn_name: str,
+        channel: str,
+        *,
+        tls_cipher: str | None = None,
+        key_repo: str | None = None,
+        cert_label: str | None = None,
+    ) -> None:
+        """Connect a reconnectable client channel, optionally over mutual TLS.
+
+        When ``tls_cipher`` is given the channel runs TLS: the cipher is set on the
+        channel definition, and an ``MQSCO`` supplies the key repository (a GSKit
+        stem — the ``.p12`` and its ``.sth`` stash sit beside it) and the client
+        certificate label to present. Plaintext stays the default so the offline
+        path is unaffected.
+        """
         import pymqi  # type: ignore
 
         self._pymqi: Any = pymqi
@@ -50,8 +67,18 @@ class PyMqiMessaging:
             ConnectionName=conn_name.encode(),
             TransportType=pymqi.CMQC.MQXPT_TCP,
         )
+        sco: Any = None
+        if tls_cipher is not None:
+            cd.SSLCipherSpec = tls_cipher.encode()
+            sco = pymqi.SCO(KeyRepository=(key_repo or "").encode())
+            if cert_label is not None:
+                sco.CertificateLabel = cert_label.encode()
         self._qmgr: Any = pymqi.QueueManager(None)
-        self._qmgr.connect_with_options(qmgr_name, cd=cd, opts=pymqi.CMQC.MQCNO_RECONNECT_Q_MGR)
+        opts = pymqi.CMQC.MQCNO_RECONNECT_Q_MGR
+        if sco is not None:
+            self._qmgr.connect_with_options(qmgr_name, cd=cd, sco=sco, opts=opts)
+        else:
+            self._qmgr.connect_with_options(qmgr_name, cd=cd, opts=opts)
         self._queues: dict[tuple[str, int], Any] = {}
 
     def _open(self, queue: str, opts: int) -> Any:

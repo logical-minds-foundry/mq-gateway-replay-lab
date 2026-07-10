@@ -54,9 +54,21 @@ def _make_handler(
     return _Handler
 
 
-def serve(qmgr: str, conn: str, channel: str, counterparty: str, port: int) -> None:
-    """Connect once and serve the exposition until killed."""
-    messaging = PyMqiMessaging(qmgr, conn, channel)
+def serve(
+    qmgr: str,
+    conn: str,
+    channel: str,
+    counterparty: str,
+    port: int,
+    *,
+    tls_cipher: str | None = None,
+    key_repo: str | None = None,
+    cert_label: str | None = None,
+) -> None:
+    """Connect once (optionally over TLS) and serve the exposition until killed."""
+    messaging = PyMqiMessaging(
+        qmgr, conn, channel, tls_cipher=tls_cipher, key_repo=key_repo, cert_label=cert_label
+    )
     queues = QueueSet.for_counterparty(counterparty)
     handler = _make_handler(messaging, queues, counterparty)
     HTTPServer(("", port), handler).serve_forever()
@@ -69,8 +81,20 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--channel", required=True, help="SVRCONN channel")
     parser.add_argument("--counterparty", required=True)
     parser.add_argument("--port", type=int, default=9109)
+    parser.add_argument("--tls-cipher", help="e.g. ANY_TLS13_OR_HIGHER (enables TLS)")
+    parser.add_argument("--key-repo", help="GSKit key repository stem (no .p12 suffix)")
+    parser.add_argument("--cert-label", help="client certificate label to present")
     args = parser.parse_args(argv)
-    serve(args.qmgr, args.conn, args.channel, args.counterparty, args.port)
+    serve(
+        args.qmgr,
+        args.conn,
+        args.channel,
+        args.counterparty,
+        args.port,
+        tls_cipher=args.tls_cipher,
+        key_repo=args.key_repo,
+        cert_label=args.cert_label,
+    )
 
 
 if __name__ == "__main__":

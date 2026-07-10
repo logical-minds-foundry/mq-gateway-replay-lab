@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 Environment=PYTHONPATH={{ gw_src_dir }}
-ExecStart={{ gw_python }} -m gwlab.exporter_server --qmgr {{ gw_exporter_qmgr }} --conn "{{ gw_exporter_conn }}" --channel {{ gw_exporter_channel }} --counterparty {{ counterparty }} --port {{ gw_exporter_port }}
+ExecStart={{ gw_python }} -m gwlab.exporter_server --qmgr {{ gw_exporter_qmgr }} --conn "{{ gw_exporter_conn }}" --channel {{ gw_exporter_channel }} --counterparty {{ counterparty }} --port {{ gw_exporter_port }} --tls-cipher {{ gw_tls_cipher }} --key-repo {{ gw_key_repo }} --cert-label {{ gw_cert_label }}
 Restart=always
 RestartSec=5
 

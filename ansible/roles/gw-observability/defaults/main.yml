@@ -16,6 +16,13 @@ gw_exporter_channel: APP.SVRCONN
 gw_python: /usr/bin/python3
 gw_src_dir: /vagrant/src       # where gwlab is importable on the exporter host
 
+# Mutual TLS to the app SVRCONN (the estate mandates TLS 1.3). The app-client
+# keystore (O=app-org) is minted by the lab PKI and distributed to
+# gw_exporter_host as a GSKit stem (key.p12 + key.sth); the gateway consumes it.
+gw_tls_cipher: ANY_TLS13_OR_HIGHER
+gw_key_repo: /var/mqm/ssl/app-client/key
+gw_cert_label: app-client
+
 # --- observability endpoints (the lab's obs node) -----------------------------
 gw_prometheus_targets_dir: /etc/prometheus/targets
 gw_prometheus_url: http://localhost:9090
