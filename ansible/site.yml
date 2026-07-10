@@ -10,3 +10,15 @@
   gather_facts: false
   roles:
     - gw-queues
+
+# Deploy the gateway's observability: the reconcile exporter (a service beside the
+# queue manager), its Prometheus file_sd target, and one board per queue manager
+# co-located with that QM's own lab board. Runs from the obs node (Prometheus +
+# Grafana), delegating the exporter service to gw_exporter_host. Owns only the
+# gateway's own exporter/target/board; it declare-and-verifies the lab's scrape
+# slot and never edits the lab's config (parasite rule). See ansible/README.md.
+- name: Deploy the gateway observability (exporter, target, boards)
+  hosts: gateway_obs
+  gather_facts: false
+  roles:
+    - gw-observability

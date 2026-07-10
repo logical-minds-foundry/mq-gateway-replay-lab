@@ -1,0 +1,67 @@
+---
+- name: Assert the exporter's queue-manager connection was provided
+  ansible.builtin.assert:
+    that:
+      - gw_exporter_qmgr | length > 0
+      - gw_exporter_conn | length > 0
+    fail_msg: >-
+      gw_exporter_qmgr and gw_exporter_conn must be set to the running queue
+      manager and its ConnectionName. gw-observability owns only the gateway's own
+      exporter, targets file, and board; it never mutates the lab's config.
+
+# --- the gwlab reconcile exporter (on the exporter host) ----------------------
+- name: Install the gwlab exporter systemd unit
+  ansible.builtin.template:
+    src: gwlab-exporter.service.j2
+    dest: "/etc/systemd/system/gwlab-exporter-{{ counterparty | lower }}.service"
+    mode: "0644"
+  become: true
+  delegate_to: "{{ gw_exporter_host }}"
+
+- name: Enable and (re)start the gwlab exporter
+  ansible.builtin.systemd:
+    name: "gwlab-exporter-{{ counterparty | lower }}"
+    enabled: true
+    state: restarted
+    daemon_reload: true
+  become: true
+  delegate_to: "{{ gw_exporter_host }}"
+
+# --- the Prometheus scrape target (gateway-owned targets file) -----------------
+- name: Publish the gwlab exporter as a Prometheus file_sd target
+  ansible.builtin.template:
+    src: gwlab-targets.json.j2
+    dest: "{{ gw_prometheus_targets_dir }}/gwlab.json"
+    mode: "0644"
+  become: true
+
+- name: Declare-verify the lab Prometheus reads the gwlab targets file
+  ansible.builtin.command: grep -q "targets/gwlab.json" /etc/prometheus/prometheus.yml
+  register: gwlab_slot
+  changed_when: false
+  failed_when: gwlab_slot.rc != 0
+  # A non-zero exit means the lab's prometheus.yml has no gwlab scrape job. That
+  # is a one-line lab-repo change (a file_sd job reading targets/gwlab.json); the
+  # gateway declares-and-verifies the slot, it never edits the lab's config.
+
+# --- the per-QM boards (co-located with each QM's own lab board) ---------------
+- name: Deploy the gateway boards into each queue manager's folder
+  ansible.builtin.command:
+    argv:
+      - "{{ gw_python }}"
+      - -m
+      - gwlab.deploy_http
+      - --counterparty
+      - "{{ counterparty }}"
+      - --prometheus-url
+      - "{{ gw_prometheus_url }}"
+      - --grafana-url
+      - "{{ gw_grafana_url }}"
+      - --grafana-user
+      - "{{ gw_grafana_user }}"
+      - --grafana-password
+      - "{{ gw_grafana_password }}"
+  environment:
+    PYTHONPATH: "{{ gw_src_dir }}"
+  register: gw_board_deploy
+  changed_when: "'deployed' in gw_board_deploy.stdout"

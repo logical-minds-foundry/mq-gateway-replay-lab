@@ -15,3 +15,14 @@ gateway_qm:
       ansible_host: "{{ lab_qm_host | default('localhost') }}"
   vars:
     counterparty: CPB
+
+# The obs node (Prometheus + Grafana) from which gw-observability deploys the
+# targets file and the boards; it delegates the exporter service to
+# gw_exporter_host. Set gw_obs_host / gw_exporter_host / gw_exporter_qmgr /
+# gw_exporter_conn at apply time (no misleading defaults for the live topology).
+gateway_obs:
+  hosts:
+    lab_obs:
+      ansible_host: "{{ gw_obs_host | default('localhost') }}"
+  vars:
+    counterparty: CPB

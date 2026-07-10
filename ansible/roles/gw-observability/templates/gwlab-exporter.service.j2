@@ -1,0 +1,14 @@
+[Unit]
+Description=gwlab reconcile exporter ({{ counterparty }} on {{ gw_exporter_qmgr }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH={{ gw_src_dir }}
+ExecStart={{ gw_python }} -m gwlab.exporter_server --qmgr {{ gw_exporter_qmgr }} --conn "{{ gw_exporter_conn }}" --channel {{ gw_exporter_channel }} --counterparty {{ counterparty }} --port {{ gw_exporter_port }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
