@@ -9,6 +9,26 @@
       manager and its ConnectionName. gw-observability owns only the gateway's own
       exporter, targets file, and board; it never mutates the lab's config.
 
+# --- provision the exporter runtime on the exporter host ----------------------
+- name: Create the gwlab virtualenv with pymqi (compiled against the MQ client)
+  ansible.builtin.pip:
+    name: pymqi
+    virtualenv: "{{ gw_venv }}"
+    virtualenv_command: /usr/bin/python3 -m venv
+  environment:
+    MQ_INSTALLATION_PATH: "{{ gw_mq_installation }}"
+  become: true
+  delegate_to: "{{ gw_exporter_host }}"
+
+- name: Place the gwlab source on the exporter host
+  ansible.builtin.copy:
+    src: "{{ gw_src_local }}"
+    dest: "{{ gw_src_dir }}/"
+    mode: "0644"
+    directory_mode: "0755"
+  become: true
+  delegate_to: "{{ gw_exporter_host }}"
+
 # --- the gwlab reconcile exporter (on the exporter host) ----------------------
 - name: Install the gwlab exporter systemd unit
   ansible.builtin.template:
