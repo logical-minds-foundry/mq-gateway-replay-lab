@@ -11,17 +11,26 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from datetime import datetime
+
     from gwlab.messaging import Message
 
 
 class FakeMessaging:
-    """A single-connection, syncpoint-aware, in-memory queue set."""
+    """A single-connection, syncpoint-aware, in-memory queue set.
 
-    def __init__(self) -> None:
+    ``clock`` models the queue manager stamping a put-time (MQMD PutDate/PutTime):
+    when set, a put stamps any message that has none, so offline reconciliation and
+    the day simulation see dated messages exactly as the live path does.
+    """
+
+    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
         self._committed: dict[str, list[Message]] = {}
         self._staged_puts: list[tuple[str, Message]] = []
         self._staged_gets: list[tuple[str, Message]] = []
         self._streams: dict[str, str] = {}
+        self._clock = clock
 
     def configure_stream(self, source: str, target: str) -> None:
         """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
@@ -33,6 +42,8 @@ class FakeMessaging:
         self._streams[source] = target
 
     def put(self, queue: str, message: Message) -> None:
+        if self._clock is not None and message.put_time is None:
+            message.put_time = self._clock()
         self._staged_puts.append((queue, message))
         target = self._streams.get(queue)
         if target is not None:
