@@ -1,0 +1,24 @@
+---
+# The counterparty tag (matches gwlab's QueueSet and the board).
+counterparty: CPB
+
+# --- gwlab reconcile exporter -------------------------------------------------
+# Runs client-mode against the queue manager and is scraped by Prometheus. It
+# runs where the MQ client + gwlab are available and which can reach the QM's
+# listener (in the lab, the monitoring/probe host that already runs the ibmmq
+# exporters). No misleading defaults for the QM connection: a mis-targeted apply
+# must fail loudly (parasite / boundary rule) — set these at apply time.
+gw_exporter_host: mon-probe
+gw_exporter_port: 9109
+gw_exporter_qmgr: ""            # REQUIRED — the running app queue manager
+gw_exporter_conn: ""           # REQUIRED — ConnectionName, e.g. "10.50.0.11(1414)"
+gw_exporter_channel: APP.SVRCONN
+gw_python: /usr/bin/python3
+gw_src_dir: /vagrant/src       # where gwlab is importable on the exporter host
+
+# --- observability endpoints (the lab's obs node) -----------------------------
+gw_prometheus_targets_dir: /etc/prometheus/targets
+gw_prometheus_url: http://localhost:9090
+gw_grafana_url: http://localhost:3000
+gw_grafana_user: admin
+gw_grafana_password: admin

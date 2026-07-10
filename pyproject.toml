@@ -45,7 +45,11 @@ testpaths = ["tests"]
 # (see demo/live_demo.py + the issue evidence), not by unit tests. The exporter
 # HTTP server binds a socket and connects via pymqi, so it is likewise box-only;
 # the exposition it serves (exporter.render) is unit-tested.
-omit = ["src/gwlab/pymqi_messaging.py", "src/gwlab/exporter_server.py"]
+omit = [
+    "src/gwlab/pymqi_messaging.py",
+    "src/gwlab/exporter_server.py",
+    "src/gwlab/deploy_http.py",
+]
 
 [tool.coverage.report]
 exclude_lines = [
