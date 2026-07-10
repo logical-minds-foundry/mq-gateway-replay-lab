@@ -1,5 +1,7 @@
 """Tests for the in-memory FakeMessaging — exercising the UOW semantics."""
 
+from datetime import datetime
+
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.messaging import Message
 
@@ -55,3 +57,15 @@ def test_get_then_backout_leaves_the_message() -> None:
     fm.get("Q")
     fm.backout()
     assert len(fm.browse("Q")) == 1
+
+
+def test_clock_stamps_only_unstamped_messages() -> None:
+    fixed = datetime(2026, 7, 8, 12, 0, 0)  # noqa: DTZ001 — injected clock
+    preset = datetime(2026, 7, 8, 8, 0, 0)  # noqa: DTZ001
+    fm = FakeMessaging(clock=lambda: fixed)
+    fm.put("Q", Message(b"a", b"1"))  # no put_time → stamped by the clock
+    fm.put("Q", Message(b"b", b"2", put_time=preset))  # already stamped → kept
+    fm.commit()
+    stamped = {m.msg_id: m.put_time for m in fm.browse("Q")}
+    assert stamped[b"1"] == fixed
+    assert stamped[b"2"] == preset
