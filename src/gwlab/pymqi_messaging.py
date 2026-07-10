@@ -12,12 +12,29 @@ end-to-end on the box (the archives are produced by the queue manager's
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from gwlab.messaging import Message
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+def _put_time(md: Any) -> datetime | None:
+    """Parse the queue manager's put timestamp (MQMD PutDate + PutTime) to UTC.
+
+    PutDate is ``YYYYMMDD`` and PutTime is ``HHMMSShh`` (hundredths); MQ stamps
+    them in UTC. Reconciliation needs this for current-day scoping and message
+    age. An unstamped descriptor yields ``None`` (the reconciliation tier fails
+    loudly on that rather than silently mis-dating a message).
+    """
+    date_raw = bytes(md.PutDate).strip(b"\x00 ")
+    time_raw = bytes(md.PutTime).strip(b"\x00 ")
+    if not date_raw or not time_raw:
+        return None
+    stamp = date_raw.decode() + time_raw.decode()[:6]  # YYYYMMDD + HHMMSS
+    return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
 
 
 class PyMqiMessaging:
@@ -67,7 +84,12 @@ class PyMqiMessaging:
             if exc.reason == self._c.MQRC_NO_MSG_AVAILABLE:
                 return None
             raise
-        return Message(body=body, msg_id=bytes(md.MsgId), correl_id=bytes(md.CorrelId))
+        return Message(
+            body=body,
+            msg_id=bytes(md.MsgId),
+            correl_id=bytes(md.CorrelId),
+            put_time=_put_time(md),
+        )
 
     def _browse_iter(self, queue: str) -> Iterator[Message]:
         handle = self._open(queue, self._c.MQOO_BROWSE)
@@ -81,7 +103,12 @@ class PyMqiMessaging:
                 if exc.reason == self._c.MQRC_NO_MSG_AVAILABLE:
                     return
                 raise
-            yield Message(body=body, msg_id=bytes(md.MsgId), correl_id=bytes(md.CorrelId))
+            yield Message(
+                body=body,
+                msg_id=bytes(md.MsgId),
+                correl_id=bytes(md.CorrelId),
+                put_time=_put_time(md),
+            )
             options = self._c.MQGMO_BROWSE_NEXT | self._c.MQGMO_NO_WAIT
 
     def browse(self, queue: str) -> list[Message]:
