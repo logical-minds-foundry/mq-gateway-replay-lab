@@ -9,10 +9,12 @@ their behaviour lands with Track C (``run`` → C1/C6; ``start-of-day`` /
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from typing import TYPE_CHECKING, cast
 
 from gwlab.config import QueueSet
+from gwlab.dashboard import build_dashboard
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -41,6 +43,16 @@ def end_of_day(args: argparse.Namespace) -> int:
     return _not_yet("end-of-day", "C5", args)
 
 
+def dashboard_cmd(args: argparse.Namespace) -> int:
+    """Print the code-generated Grafana dashboard JSON for the counterparty.
+
+    Pipe it to the lab Grafana's `/api/dashboards/db`. The queue manager is a
+    parameter (`--qmgr`) — pass whichever one is up — never hardcoded.
+    """
+    print(json.dumps(build_dashboard(args.qmgr, args.counterparty), indent=2))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the argument parser, wiring each subcommand to its handler."""
     parser = argparse.ArgumentParser(prog="gwlab", description="MQ gateway replay lab")
@@ -56,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
         ("end-of-day", end_of_day),
     ):
         sub.add_parser(name).set_defaults(handler=handler)
+    dash = sub.add_parser("dashboard", help="print the Grafana dashboard JSON")
+    dash.add_argument("--qmgr", required=True, help="the queue manager the board targets")
+    dash.set_defaults(handler=dashboard_cmd)
     return parser
 
 
