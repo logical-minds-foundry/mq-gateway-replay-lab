@@ -19,7 +19,7 @@
 - name: Define the experiment's own round-trip queues (idempotent; GW.* only)
   ansible.builtin.shell: |
     set -o pipefail
-    printf 'DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE\n' {{ gw_queues | join(' ') }} \
+    printf 'DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE MAXDEPTH({{ gw_max_depth }})\n' {{ gw_queues | join(' ') }} \
       | /opt/mqm/bin/runmqsc {{ qmgr_name }}
   args:
     executable: /bin/bash
@@ -42,3 +42,17 @@
   register: gw_stream
   changed_when: "'AMQ8008' in gw_stream.stdout"
   failed_when: gw_stream.rc not in [0, 10]
+
+- name: Cap archive retention to a rolling day via CAPEXPRY
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "ALTER QLOCAL({{ item }}) CAPEXPRY({{ gw_archive_capexpry }})" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  loop: "{{ gw_archives }}"
+  register: gw_capexpry
+  changed_when: "'AMQ8008' in gw_capexpry.stdout"
+  failed_when: gw_capexpry.rc not in [0, 10]

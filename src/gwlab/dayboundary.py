@@ -1,7 +1,13 @@
-"""Start-of-day / end-of-day archive lifecycle.
+"""Start-of-day / end-of-day archive lifecycle (the **fallback** retention).
 
-The archives hold one business day (intraday retention, R12): start-of-day clears
-them for a fresh day; end-of-day clears them once the day has reconciled — and
+The primary intraday-retention mechanism is now the queue manager itself:
+``CAPEXPRY`` on the archive queues gives every streamed copy a rolling 24h TTL
+(set in the gw-queues Ansible role), verified live on the lab (see issue #27). So
+nobody has to remember to clear the archive — the queue manager bounds it.
+
+These explicit clear operations are retained as the **fallback** for queue
+managers where CAPEXPRY-based retention is not used: start-of-day clears the
+archives for a fresh day; end-of-day clears them once the day has reconciled and
 **refuses** to clear while anything is still unconfirmed, so a day is never
 silently discarded with outstanding messages.
 """
