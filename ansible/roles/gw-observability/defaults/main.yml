@@ -24,11 +24,15 @@ gw_src_local: "{{ playbook_dir }}/../src/gwlab"  # gwlab source on the controlle
 gw_mq_installation: /opt/mqm
 
 # Mutual TLS to the app SVRCONN (the estate mandates TLS 1.3). The app-client
-# keystore (O=app-org) is minted by the lab PKI and distributed to
-# gw_exporter_host as a GSKit stem (key.p12 + key.sth); the gateway consumes it.
+# keystore (O=app-org) is minted by the lab PKI; the gateway distributes it to its
+# own exporter host as a GSKit stem (key.p12 + key.sth). The source .p12 and its
+# password are provided at apply time (from the lab PKI output) — REQUIRED, no
+# misleading defaults for secrets.
 gw_tls_cipher: ANY_TLS13_OR_HIGHER
 gw_key_repo: /var/mqm/ssl/app-client/key
 gw_cert_label: app-client
+gw_app_client_p12: ""          # REQUIRED — path to app-client.p12 on the controller
+gw_app_client_pw: ""           # REQUIRED — the keystore password (e.g. via lab-secret.sh)
 
 # --- observability endpoints (the lab's obs node) -----------------------------
 gw_prometheus_targets_dir: /etc/prometheus/targets
