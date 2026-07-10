@@ -43,9 +43,19 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--conn", required=True, help="ConnectionName, e.g. host(port)")
     parser.add_argument("--channel", required=True, help="SVRCONN channel")
     parser.add_argument("--counterparty", default="CPB")
+    parser.add_argument("--tls-cipher", help="e.g. ANY_TLS13_OR_HIGHER (enables TLS)")
+    parser.add_argument("--key-repo", help="GSKit key repository stem (no .p12 suffix)")
+    parser.add_argument("--cert-label", help="client certificate label to present")
     args = parser.parse_args(argv)
 
-    messaging = PyMqiMessaging(args.qmgr, args.conn, args.channel)
+    messaging = PyMqiMessaging(
+        args.qmgr,
+        args.conn,
+        args.channel,
+        tls_cipher=args.tls_cipher,
+        key_repo=args.key_repo,
+        cert_label=args.cert_label,
+    )
     queues = QueueSet.for_counterparty(args.counterparty)
     responder = Responder(messaging, queues)
 
