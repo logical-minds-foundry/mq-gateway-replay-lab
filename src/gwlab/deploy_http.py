@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from typing import TYPE_CHECKING, Any
@@ -52,13 +53,29 @@ class HttpDeployClient:
         result = _get_json(f"{self._prom}/api/v1/query?query={query}")["data"]["result"]
         return sorted({series["metric"]["qmgr"] for series in result if "qmgr" in series["metric"]})
 
-    def qm_board_folder_uid(self, qmgr: str) -> str | None:
-        query = urllib.parse.quote(qmgr)
-        hits = _get_json(f"{self._graf}/api/search?type=dash-db&query={query}", self._auth)
-        for hit in hits:
-            if hit.get("uid", "").startswith("lab-qm-") and hit.get("folderUid"):
-                return str(hit["folderUid"])
+    def _stack_for(self, qmgr: str) -> str | None:
+        query = urllib.parse.quote(f'ibmmq_qmgr_status{{qmgr="{qmgr}"}}')
+        result = _get_json(f"{self._prom}/api/v1/query?query={query}")["data"]["result"]
+        for series in result:
+            stack = series["metric"].get("stack")
+            if stack:
+                return str(stack)
         return None
+
+    def qm_board_folder_uid(self, qmgr: str) -> str | None:
+        # Co-locate with the stack's cockpit board (lab-<stack>-cluster), which is
+        # reliably under its per-stack folder — the QM's own board can sit at root.
+        # Look the cockpit up by uid directly (Grafana search matches titles, not uids).
+        stack = self._stack_for(qmgr)
+        if stack is None:
+            return None
+        cockpit = f"lab-{stack}-cluster"
+        try:
+            meta = _get_json(f"{self._graf}/api/dashboards/uid/{cockpit}", self._auth)["meta"]
+        except urllib.error.HTTPError:
+            return None
+        folder_uid = meta.get("folderUid")
+        return str(folder_uid) if folder_uid else None
 
     def upsert_board(self, board: dict[str, Any], folder_uid: str) -> None:
         payload = json.dumps(
