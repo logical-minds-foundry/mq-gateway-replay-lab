@@ -12,7 +12,10 @@ added and proven on the live box in Track C.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from datetime import datetime
 
 
 @dataclass
@@ -21,11 +24,18 @@ class Message:
 
     ``msg_id`` is the correlation key: the counterparty echoes it back as the
     reply's ``correl_id``, which is what reconciliation matches on.
+
+    ``put_time`` is when the queue manager stamped the message (MQMD PutDate +
+    PutTime). The live adapter reads it on browse; it is the basis for
+    current-trading-day scoping and the age of an unconfirmed message. It is
+    optional because the gateway's put/get logic never needs it — only the
+    reconciliation/observability tier does.
     """
 
     body: bytes
     msg_id: bytes
     correl_id: bytes = b""
+    put_time: datetime | None = None
 
 
 class Messaging(Protocol):
