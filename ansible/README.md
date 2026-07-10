@@ -28,6 +28,20 @@ both-or-neither guarantee — if the copy cannot be written, the original put
 fails. The app-level two-put / get-copy in `gwlab` is the documented fallback for
 queue managers where streaming is not configured.
 
+## Retention & sizing
+
+The role also sets, on the archive queues:
+
+- **`CAPEXPRY(864000)`** — a rolling **24h** cap (tenths of a second). The
+  streamed copy starts `MQEI_UNLIMITED`, so the cap becomes its TTL; expired
+  copies are removed by the periodic reconcile browse (or the qm.ini
+  `ExpiryInterval` scanner). This **replaces** the start-of-day / end-of-day
+  clearing — the queue manager bounds the archive. Verified live (issue `#27`).
+- **`MAXDEPTH(999999999)`** — the default `5000` is far too small for a day of
+  archive at scale. The single queue-file limit is *not* a concern:
+  `MAXFSIZE(DEFAULT)` is ~2 TB. `MAXMSGL` stays the 4 MB default (ample for
+  ~200 KB messages). Size `/var/mqm` for a day of archive on each Native HA node.
+
 ## Apply (against the running lab)
 
 From inside the shared lab VM, on/reaching the active queue-manager node:

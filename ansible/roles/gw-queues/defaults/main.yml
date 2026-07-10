@@ -29,6 +29,25 @@ gw_streams:
   - ["{{ q_send }}", "{{ q_send_archive }}"]
   - ["{{ q_reply }}", "{{ q_reply_archive }}"]
 
+# Sizing for production-scale volume (capacity analysis in the epic). A day of
+# archive at high volume far exceeds the default MAXDEPTH(5000). The single
+# queue-file limit is NOT a concern: MAXFSIZE(DEFAULT) is ~2 TB, well above a
+# day of ~200 KB messages.
+gw_max_depth: 999999999
+
+# Rolling intraday retention on the archives. The streamed copy starts
+# MQEI_UNLIMITED, and CAPEXPRY caps it to 24h (864000 tenths of a second).
+# Expired copies are removed by the periodic reconcile browse (or the qm.ini
+# ExpiryInterval scanner) — which retires the start-of-day / end-of-day
+# clearing. (ExpiryInterval is a queue-manager setting we declare-and-verify,
+# never mutate — the parasite rule.)
+gw_archive_capexpry: 864000
+
+# The archive queues that carry the rolling-retention cap.
+gw_archives:
+  - "{{ q_send_archive }}"
+  - "{{ q_reply_archive }}"
+
 # qmgr_name is intentionally left unset — it must be provided at apply time (the
 # lab's running queue manager). A missing value fails loudly (see tasks), so a
 # mis-targeted apply never silently hits the wrong box.
