@@ -61,13 +61,44 @@ TROUBLED_DAY: tuple[Phase, ...] = (
 
 # The last hour of a trading day: steady, a slowdown, a ~10-minute block whose
 # backlog recovers (unlike TROUBLED_DAY's outage, which is left stranded), then a
-# small end-of-day unconfirmed tail. See ``run_last_hour``.
+# small end-of-day unconfirmed tail. See ``run_last_hour`` (offline) and the live
+# two-process pair (``demo/gateway_driver.py`` + ``demo/svc_responder.py``).
 LAST_HOUR: tuple[Phase, ...] = (
     Phase("steady", 20, confirm=True),
     Phase("slowdown", 16, confirm=True),
     Phase("block", 10, confirm=False),
     Phase("recovery", 12, confirm=True),
 )
+
+# Wall-clock seconds each ``LAST_HOUR`` phase occupies in the *live* run. The block
+# is the ~10-minute stoppage whose backlog climbs then drains, so the board shows
+# both halves of the curve. The gateway mimic and the counterparty responder are
+# separate processes (one queue-manager connection each, as in production); they
+# share this schedule and a common start time, so no inter-process messaging is
+# needed — each derives the current phase from the elapsed wall-clock.
+LAST_HOUR_SECONDS: dict[str, int] = {
+    "steady": 300,
+    "slowdown": 420,
+    "block": 600,
+    "recovery": 360,
+}
+
+
+def phase_at(elapsed: float) -> Phase | None:
+    """The ``LAST_HOUR`` phase active ``elapsed`` seconds after the shared start, or
+    ``None`` once the scheduled phases are over (the run's tail/idle window).
+
+    This is the single source of truth both live processes consult to stay in step
+    without talking to each other: the responder withholds confirmations exactly
+    when ``phase_at`` reports the non-confirming ``block``, and the gateway paces its
+    sends by the same boundaries.
+    """
+    boundary = 0.0
+    for phase in LAST_HOUR:
+        boundary += LAST_HOUR_SECONDS[phase.label]
+        if elapsed < boundary:
+            return phase
+    return None
 
 
 class SimClock:
