@@ -2,10 +2,6 @@
 
 *A recommendation for the message-gateway replay problem.*
 
-> **Near-final.** The mechanism, the three algorithms, and the last-hour evidence (§9)
-> are proven live on the real remote topology — the counterparty on a separate queue
-> manager across a channel. The only remaining addition is the architecture diagrams.
-
 ---
 
 ## 1. Summary
@@ -179,6 +175,13 @@ queue manager streaming to a separate counterparty queue manager over a live TLS
 streamed copy stays unlimited; streaming fires through the `QALIAS`; the retained audit
 copy and the copy delivered to the counterparty carry an **identical MsgId**; and one
 `MUSTDUP` put both retains the audit and transmits the duplicate.
+
+![Architecture of the message flow. The application puts to a transparent alias
+(`GW.CPB.REQUEST`) that resolves to the outbound audit queue (`GW.CPB.REQUEST.AUDIT`,
+retained); a duplicate is streamed onward through a remote-queue definition to the
+counterparty across the channel; the confirmation returns to `GW.CPB.REPLY` and is
+streamed to the inbound audit; a collector browses only the two audit queues. Everything
+that matters is on our side — the counterparty is a black box.](images/architecture-flow.png)
 
 ---
 
