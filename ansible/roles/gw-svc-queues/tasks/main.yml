@@ -43,7 +43,7 @@
   become: true
   become_user: mqm
   register: define_request
-  changed_when: "'AMQ8005' in define_request.stdout"
+  changed_when: "'AMQ8006' in define_request.stdout"
   failed_when: define_request.rc != 0
 
 - name: Define the reply QREMOTE (routes replies back to our queue manager, over the existing XMITQ)
@@ -56,7 +56,7 @@
   become: true
   become_user: mqm
   register: define_reply_remote
-  changed_when: "'AMQ8005' in define_reply_remote.stdout"
+  changed_when: "'AMQ8006' in define_reply_remote.stdout"
   failed_when: define_reply_remote.rc != 0
 
 # --- the existing return link (the lab's) — declare-and-verify, never create --

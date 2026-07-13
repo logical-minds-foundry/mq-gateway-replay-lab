@@ -31,7 +31,7 @@
   become: true
   become_user: mqm
   register: define_audits
-  changed_when: "'AMQ8005' in define_audits.stdout"
+  changed_when: "'AMQ8006' in define_audits.stdout"
   failed_when: define_audits.rc != 0
 
 - name: Define the app reply QLOCAL (drained by the responder's reply put)
@@ -44,7 +44,7 @@
   become: true
   become_user: mqm
   register: define_reply
-  changed_when: "'AMQ8005' in define_reply.stdout"
+  changed_when: "'AMQ8006' in define_reply.stdout"
   failed_when: define_reply.rc != 0
 
 - name: Define the QALIAS (the app's transparent put target)
@@ -57,7 +57,7 @@
   become: true
   become_user: mqm
   register: define_alias
-  changed_when: "'AMQ8005' in define_alias.stdout"
+  changed_when: "'AMQ8006' in define_alias.stdout"
   failed_when: define_alias.rc != 0
 
 - name: Define the QREMOTE (stream target -> counterparty landing, over the existing XMITQ)
@@ -70,7 +70,7 @@
   become: true
   become_user: mqm
   register: define_remote
-  changed_when: "'AMQ8005' in define_remote.stdout"
+  changed_when: "'AMQ8006' in define_remote.stdout"
   failed_when: define_remote.rc != 0
 
 - name: Stream each live queue to its MUSTDUP target (retained original -> remote landing; reply -> reply audit)
