@@ -168,3 +168,49 @@ the document and drop in the real figure.
 - Disclosing implementation language, code, or the lab's tooling internals.
 - Any client-identifiable content.
 - Building the collector *for* the client — the document describes it; they build it.
+
+## Correction (2026-07-13): the remote-queuing topology is mandatory
+
+The initial lab (and the first draft of §4) modelled the counterparty as a **local
+consumer of a local queue** — no transmission queue, no channel, no remote queue
+manager. That is uninteresting and proves nothing about production: the counterparty is
+always across a channel on another queue manager. The design and the recommendation are
+corrected to the remote topology, and the lab **must prove it on real remote queuing**
+before the write-up is circulated (docs are a guide; truth is proven on real iron).
+
+**IBM streaming-queue facts (sourced, cached under the lab's `build/refs/ibm-docs/`):**
+
+- You **cannot** define `STREAMQ` on a transmission queue (`USAGE(XMITQ)`) nor on a
+  remote-queue definition — source of a stream is always an ordinary local queue.
+  ([restrictions](https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=queues-streaming-queue-restrictions))
+- A local queue's `STREAMQ` **target may be a remote queue**, delivering the duplicate to
+  another queue manager.
+  ([remote/alias](https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=queues-streaming-remote-alias))
+- The streamed copy preserves the message descriptor including **MsgId and CorrelId**.
+  ([configuration](https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=queues-streaming-configuration))
+
+**Corrected mechanism.**
+
+- **Outbound.** The gateway puts to a **local** queue (`GW.CPB.SEND`) whose `STREAMQ`
+  target is a **remote-queue definition** (`GW.CPB.SEND.TO.CPB` → counterparty QM via an
+  XMITQ + sender channel). The queue manager **retains the original on `GW.CPB.SEND`**
+  (this is the outbound audit) and **transmits the duplicate** to the counterparty, in
+  one unit of work, `STRMQOS(MUSTDUP)`. `CAPEXPRY` on `GW.CPB.SEND` gives rolling-day
+  retention. Must-duplicate guarantees the duplicate reaches the **XMITQ** (not that the
+  channel has delivered) — correct, since an untransmitted message is rightly unconfirmed.
+- **Inbound.** Unchanged and already correct: confirmations arrive across a return
+  channel onto local `GW.CPB.REPLY`, streamed to local `GW.CPB.REPLY.AUDIT`.
+- **Asymmetry (inherent).** Outbound audit = the retained **original** on the put queue;
+  inbound audit = the retained **duplicate**. This is forced by the restriction (you
+  cannot stream an XMITQ/QREMOTE, so the retained copy must be the source). Reconciliation
+  browses `GW.CPB.SEND` (outbound) and `GW.CPB.REPLY.AUDIT` (inbound).
+
+**Impact.** The three algorithms, the collector, the observability, and reconciliation
+are **transport-agnostic and unchanged**. What changes: (1) the outbound MQ objects
+(a QREMOTE stream target, an XMITQ, a sender channel, and the outbound audit being the
+put queue itself); (2) the lab must stand up a **real counterparty queue manager** with a
+channel pair and prove the end-to-end remote path; (3) `QueueSet`/reconcile/simulation
+change so the outbound audit is the send queue and the stream target is remote — the code
+that currently streams `send → send_audit` locally is the local shortcut being replaced.
+
+This correction **blocks** the last-hour live run and the finalisation of the document.

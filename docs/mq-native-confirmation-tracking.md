@@ -2,9 +2,12 @@
 
 *A recommendation for the message-gateway replay problem.*
 
-> **Placeholders.** Passages marked `⟨PLACEHOLDER: …⟩` are awaiting the numbers and
-> the dashboard image from the last-hour live run and will be filled in before this
-> document is circulated. Everything else is final.
+> **Draft — provenance pending.** Passages marked `⟨PLACEHOLDER: …⟩` await the numbers
+> and dashboard image from the last-hour live run. **The provenance claims (§1, §9, and
+> the closing note) are scoped to a run over the real remote topology — the counterparty
+> on a separate queue manager across a channel — which is being proven now; they are not
+> yet final.** This document will not be circulated until that end-to-end remote proof
+> exists.
 
 ---
 
@@ -27,10 +30,12 @@ product, or any change to the messages themselves.
 
 The recommendation is not theoretical. Every mechanism and every algorithm below was
 **built as a working prototype and validated in a laboratory** against a real IBM MQ
-**Native HA** queue manager (a three-node group), over **mutual TLS 1.3**, driving a
-simulated trading day with an induced confirmation failure. The evidence in §9 — a
-live dashboard and measured numbers — is output from that prototype, not an
-illustration.
+**Native HA** queue manager (a three-node group), over **mutual TLS 1.3** — with the
+counterparty on a **separate queue manager reached across a channel**, exactly as in
+production, so the outbound audit is proven against real remote queuing and not a
+local shortcut. The evidence in §9 — a live dashboard and measured numbers — is output
+from that prototype, not an illustration. ⟨PENDING: the remote-topology run is the
+work in progress; this claim is finalised only once it is proven.⟩
 
 ---
 
@@ -60,22 +65,31 @@ own data. The recommendation is to let it.
 
 ## 3. The core insight: let the queue manager keep the record
 
-IBM MQ can be told to keep an **audit copy** of a queue's traffic for you. When the
-gateway puts a message to the send queue, the queue manager **atomically** writes a
-copy to a companion *audit queue* — in the **same unit of work**, with the **same
-message identifier** — with no application code involved. The same is done for
-confirmations arriving on the reply queue.
+IBM MQ can duplicate a queue's traffic for you — a **streaming queue** — so that a copy
+is retained for audit while the live message flows on, all under the **same unit of
+work**, with the **same message identifier**, and with no application code involved. The
+counterparty sits across a channel on another queue manager, so the two directions use
+this mechanism slightly differently:
 
-"Atomically, in the same unit of work" is the whole point: the copy and the original
-either both commit or both roll back. There is no window in which a message is sent but
-not recorded, or recorded but not sent — the failure mode a hand-written log cannot
-close. Because the queue manager assigns the copy the **same message identifier** as
-the original, the audit queues can be matched back to the live flow exactly.
+- **Outbound.** The gateway puts each message to a **local** queue whose streaming
+  target is a **remote-queue definition** pointing at the counterparty's queue manager.
+  The queue manager **retains the original locally** — that retained queue is the
+  **outbound audit** — and **transmits a duplicate** to the counterparty (over a
+  transmission queue and sender channel). Both actions are one unit of work.
+- **Inbound.** The counterparty's confirmation arrives across a channel onto a **local**
+  reply queue. That reply queue streams a copy to a **local inbound audit** queue; the
+  gateway consumes the confirmation as usual, and the audit copy is retained.
 
-Two audit queues result: an **outbound audit** (a copy of everything sent) and an
-**inbound audit** (a copy of every confirmation received). Together they are a complete,
-queue-manager-guaranteed record of the day. Reconciliation reads only these audit
-queues — never the live path — so it never competes with live throughput.
+"Atomically, in the same unit of work" is the whole point: for the outbound send, either
+the message is both retained for audit and queued for transmission, or neither happens —
+there is no window in which a message is transmitted but not recorded, or recorded but
+not transmitted, the failure mode a hand-written log cannot close. Because the streamed
+copy preserves the **same message identifier**, the audit can be matched back to the
+flow exactly.
+
+Two audit records result: the **outbound audit** (the retained originals of everything
+sent) and the **inbound audit** (a copy of every confirmation received). Reconciliation
+reads only these — never the live consume path — so it never competes with throughput.
 
 ---
 
@@ -83,43 +97,73 @@ queues — never the live path — so it never competes with live throughput.
 
 The mechanism is a base-licensed IBM MQ feature (a **streaming queue** with
 must-duplicate quality of service); it needs no MQ Advanced entitlement and no new
-product. The objects for one counterparty's flow (`CPB`) are defined and configured
-with the following MQSC. Names are illustrative — substitute your own convention.
+product. Two rules of the feature shape the design, and both are load-bearing:
+
+- A local queue's streaming **target may be a remote-queue definition** — so the
+  duplicate can be delivered to another queue manager.
+- You **cannot** put `STREAMQ` on a transmission queue, nor on a remote-queue
+  definition — so the *source* of a stream is always an ordinary local queue.
+
+Together these dictate the outbound shape: the gateway puts to a **local** queue, the
+**original stays there as the audit**, and the **duplicate is streamed onward** to the
+counterparty. The objects for one counterparty's flow (`CPB`) follow. Names are
+illustrative — substitute your own convention; the placeholders in angle brackets are
+the counterparty's own coordinates.
 
 ```mqsc
-* The live queues the gateway already uses, plus an audit copy of each.
-DEFINE QLOCAL('GW.CPB.SEND')        DEFPSIST(YES) SHARE MAXDEPTH(999999999)
-DEFINE QLOCAL('GW.CPB.SEND.AUDIT')  DEFPSIST(YES) SHARE MAXDEPTH(999999999)
+* --- OUTBOUND ---------------------------------------------------------------
+* The gateway puts here. The ORIGINAL is retained on this queue (the outbound
+* audit); a DUPLICATE is streamed onward to the counterparty. CAPEXPRY gives it
+* a self-clearing rolling-day retention (value in tenths of a second; 864000 = 24 h).
+DEFINE QLOCAL('GW.CPB.SEND') DEFPSIST(YES) SHARE MAXDEPTH(999999999) CAPEXPRY(864000)
+
+* The stream target: a remote-queue definition resolving to the counterparty's
+* queue, via a transmission queue drained by a sender channel.
+DEFINE QREMOTE('GW.CPB.SEND.TO.CPB') RNAME('<counterparty inbound queue>') +
+       RQMNAME('<counterparty qmgr>') XMITQ('<xmitq to counterparty>')
+DEFINE QLOCAL('<xmitq to counterparty>') USAGE(XMITQ)
+DEFINE CHANNEL('NHAUAPP.TO.CPB') CHLTYPE(SDR) TRPTYPE(TCP) +
+       CONNAME('<counterparty host>(1414)') XMITQ('<xmitq to counterparty>')
+
+* One put; the queue manager retains the original AND streams a duplicate to the
+* counterparty — same MsgId, one unit of work, both-or-neither. No application logic.
+ALTER  QLOCAL('GW.CPB.SEND') STREAMQ('GW.CPB.SEND.TO.CPB') STRMQOS(MUSTDUP)
+
+* --- INBOUND ----------------------------------------------------------------
+* Confirmations arrive from the counterparty (across a return channel) onto a local
+* reply queue; the gateway consumes them, and a duplicate is retained as the audit.
 DEFINE QLOCAL('GW.CPB.REPLY')       DEFPSIST(YES) SHARE MAXDEPTH(999999999)
-DEFINE QLOCAL('GW.CPB.REPLY.AUDIT') DEFPSIST(YES) SHARE MAXDEPTH(999999999)
-
-* Every put to the live queue is atomically copied to its audit queue,
-* same MsgId, same unit of work — by the queue manager, with no application logic.
-ALTER  QLOCAL('GW.CPB.SEND')  STREAMQ('GW.CPB.SEND.AUDIT')  STRMQOS(MUSTDUP)
+DEFINE QLOCAL('GW.CPB.REPLY.AUDIT') DEFPSIST(YES) SHARE MAXDEPTH(999999999) CAPEXPRY(864000)
 ALTER  QLOCAL('GW.CPB.REPLY') STREAMQ('GW.CPB.REPLY.AUDIT') STRMQOS(MUSTDUP)
-
-* Cap each audit copy's lifetime to one trading day (value in tenths of a second;
-* 864000 = 24 h). The audit queues become a self-clearing rolling day, retiring
-* start-of-day / end-of-day housekeeping.
-ALTER  QLOCAL('GW.CPB.SEND.AUDIT')  CAPEXPRY(864000)
-ALTER  QLOCAL('GW.CPB.REPLY.AUDIT') CAPEXPRY(864000)
 ```
+
+The return path for confirmations (the counterparty's reply routed back to
+`GW.CPB.REPLY`) uses standard reply-to-queue / reply-to-queue-manager addressing and a
+channel back from the counterparty — ordinary MQ request/reply, out of scope for the
+audit mechanism itself.
 
 Three invariants make the record trustworthy, and the collector below depends on them:
 
-1. **The message identifier is preserved** into the audit copy by the streaming queue.
-   The outbound audit therefore carries the same identifiers the gateway sent under.
+1. **The message identifier is preserved** into the streamed copy, so both the retained
+   original and the transmitted duplicate carry the identifier the gateway sent under —
+   and the outbound audit can be matched to the confirmations exactly.
 2. **The confirmation echoes the request's identifier.** By convention the counterparty
    returns the request's message identifier as the **correlation identifier** of its
    confirmation. That echo is what makes a confirmation match its request
    authoritatively.
-3. **Must-duplicate means both-or-neither.** If the audit copy cannot be written, the
-   original put fails; there is no "sent but unaudited" state.
+3. **Must-duplicate means both-or-neither.** If the message cannot be both retained for
+   audit and queued for transmission, the put fails; there is no "transmitted but
+   unaudited" (or "audited but not transmitted") state. Note that must-duplicate
+   guarantees the duplicate reaches the **transmission queue**, not that the channel has
+   yet delivered it — which is correct: the audit records the send, and a message still
+   awaiting transmission is, rightly, counted as unconfirmed.
 
 `MAXDEPTH` is set high because a full day of audit traffic far exceeds the default; the
 single queue-file limit is not a concern (its default ceiling is roughly two terabytes,
 far above a day's volume). `CAPEXPRY` bounds retention to one rolling trading day, so
-the audit queues never grow without limit.
+the audit queues never grow without limit. Reconciliation (below) browses the **outbound
+audit** — the retained originals on `GW.CPB.SEND` — and the **inbound audit**,
+`GW.CPB.REPLY.AUDIT`.
 
 ---
 
@@ -228,11 +272,14 @@ the code is straightforward once the audit queues and the three algorithms are i
 ## 9. Evidence: a last-hour trading run, live
 
 To show what the collector surfaces, a realistic **last hour of a trading day** was run
-against the live Native HA queue manager: a healthy open, then confirmation response
-times **degrading**, then a **~10-minute stoppage** during which confirmations stop
-arriving and the unconfirmed backlog climbs, then **recovery** as the backlog drains —
-leaving a small handful of trades still unconfirmed at end of day, plus one deliberately
-injected **unexpected confirmation** to exercise Algorithm 3.
+against the live Native HA queue manager, **with the counterparty on a separate queue
+manager across a channel** — the real remote topology, so the outbound audit is
+exercised through an actual transmission queue and streamed remote delivery, not a local
+stand-in. The run: a healthy open, then confirmation response times **degrading**, then a
+**~10-minute stoppage** during which confirmations stop arriving and the unconfirmed
+backlog climbs, then **recovery** as the backlog drains — leaving a small handful of
+trades still unconfirmed at end of day, plus one deliberately injected **unexpected
+confirmation** to exercise Algorithm 3.
 
 > ⟨PLACEHOLDER: dashboard image — `docs/images/last-hour-board.png`, the end-of-day
 > board for the last-hour run.⟩
@@ -311,5 +358,7 @@ and size the deployment:
 
 *Provenance: every mechanism, invariant, and algorithm in this document was implemented
 as a working prototype and validated in a laboratory against a real IBM MQ Native HA
-queue manager over mutual TLS 1.3. The figures in §9 and §10 are measured output from
-that prototype.*
+queue manager over mutual TLS 1.3, with the counterparty on a separate queue manager
+reached across a channel — the outbound audit proven through real remote queuing, not a
+local stand-in. The figures in §9 and §10 are measured output from that prototype.
+⟨PENDING: finalised once the remote-topology run is proven.⟩*
