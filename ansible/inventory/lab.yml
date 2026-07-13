@@ -26,3 +26,18 @@ gateway_obs:
       ansible_host: "{{ gw_obs_host | default('localhost') }}"
   vars:
     counterparty: CPB
+
+# The counterparty's own queue manager (SVCQM), reached over the lab's
+# EXISTING inter-QM link (issue #56). This is the only group that targets a
+# box other than our own queue manager; gw-svc-queues still only creates its
+# own GW.* objects there and declare-and-verifies the existing return
+# XMITQ/channel (parasite / boundary rule). Provide qmgr_name (SVCQM's live
+# instance name) and our_qmgr at apply time — no misleading defaults for
+# either, so a mis-targeted apply fails loudly rather than silently wiring the
+# reply route to the wrong box.
+gateway_svc_qm:
+  hosts:
+    svc_qm:
+      ansible_host: "{{ svc_qm_host | default('localhost') }}"
+  vars:
+    counterparty: CPB
