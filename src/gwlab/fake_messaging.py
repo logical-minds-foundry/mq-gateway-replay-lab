@@ -31,6 +31,7 @@ class FakeMessaging:
         self._staged_gets: list[tuple[str, Message]] = []
         self._streams: dict[str, str] = {}
         self._clock = clock
+        self._next_msgid = 0
 
     def configure_stream(self, source: str, target: str) -> None:
         """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
@@ -42,6 +43,11 @@ class FakeMessaging:
         self._streams[source] = target
 
     def put(self, queue: str, message: Message) -> None:
+        if not message.msg_id:
+            # Mirror the queue manager minting a globally-unique MsgId (the live
+            # path uses MQPMO_NEW_MSG_ID); a synthetic-but-unique id, never zero.
+            self._next_msgid += 1
+            message.msg_id = b"FAKE" + self._next_msgid.to_bytes(20, "big")
         if self._clock is not None and message.put_time is None:
             message.put_time = self._clock()
         self._staged_puts.append((queue, message))

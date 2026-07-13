@@ -23,7 +23,10 @@ class Message:
     """A message on a queue: the body plus the MQI header fields we rely on.
 
     ``msg_id`` is the correlation key: the counterparty echoes it back as the
-    reply's ``correl_id``, which is what reconciliation matches on.
+    reply's ``correl_id``, which is what reconciliation matches on. It defaults to
+    empty, meaning **let the queue manager mint a globally-unique MsgId** on put —
+    the gateway never hand-assigns a predetermined value (that would fake global
+    uniqueness). The put reads the assigned id back onto the message.
 
     ``put_time`` is when the queue manager stamped the message (MQMD PutDate +
     PutTime). The live adapter reads it on browse; it is the basis for
@@ -33,7 +36,7 @@ class Message:
     """
 
     body: bytes
-    msg_id: bytes
+    msg_id: bytes = b""
     correl_id: bytes = b""
     put_time: datetime | None = None
 

@@ -92,10 +92,18 @@ class PyMqiMessaging:
     def put(self, queue: str, message: Message) -> None:
         handle = self._open(queue, self._c.MQOO_OUTPUT)
         md = self._pymqi.MD()
-        md.MsgId = message.msg_id
+        options = self._c.MQPMO_SYNCPOINT
+        if message.msg_id:
+            md.MsgId = message.msg_id
+        else:
+            # Let the queue manager mint a globally-unique MsgId rather than assert
+            # uniqueness ourselves; read it back so the caller can track the message.
+            options |= self._c.MQPMO_NEW_MSG_ID
         md.CorrelId = message.correl_id
-        pmo = self._pymqi.PMO(Options=self._c.MQPMO_SYNCPOINT)
+        pmo = self._pymqi.PMO(Options=options)
         handle.put(message.body, md, pmo)
+        if not message.msg_id:
+            message.msg_id = bytes(md.MsgId)
 
     def get(self, queue: str) -> Message | None:
         handle = self._open(queue, self._c.MQOO_INPUT_SHARED)

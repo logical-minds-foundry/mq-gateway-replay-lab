@@ -28,10 +28,6 @@ from gwlab.pymqi_messaging import PyMqiMessaging
 from gwlab.simulation import LAST_HOUR, LAST_HOUR_SECONDS
 
 
-def _msgid(seq: int) -> bytes:
-    return seq.to_bytes(24, "big")
-
-
 def _drain_replies(messaging: PyMqiMessaging, queues: QueueSet) -> None:
     """Consume whatever confirmations have arrived (the audit copy is already
     retained on the reply-audit queue by the stream, so this never loses history)."""
@@ -65,7 +61,7 @@ def main(argv: list[str] | None = None) -> None:
     for phase in LAST_HOUR:
         interval = LAST_HOUR_SECONDS[phase.label] / phase.trades
         for _ in range(phase.trades):
-            outbound.send(gw, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+            outbound.send(gw, queues, f"trade-{seq:06d}".encode())
             seq += 1
             _drain_replies(gw, queues)
             time.sleep(interval)

@@ -114,11 +114,6 @@ class SimClock:
         self._now += delta
 
 
-def _msgid(seq: int) -> bytes:
-    """A 24-byte MsgId (MQ's width) derived from the trade sequence."""
-    return seq.to_bytes(24, "big")
-
-
 def _drain_confirmed(messaging: Messaging, queues: QueueSet, responder: Responder) -> None:
     """The counterparty confirms everything outstanding, and the gateway consumes it."""
     while responder.process_one() is not None:
@@ -151,7 +146,7 @@ def run_day(
     seq = 0
     for phase in phases:
         for _ in range(phase.trades):
-            outbound.send(messaging, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+            outbound.send(messaging, queues, f"trade-{seq:06d}".encode())
             seq += 1
             if after_send is not None:
                 after_send(phase)
@@ -203,7 +198,7 @@ def run_last_hour(
     seq = 0
     for phase in LAST_HOUR:
         for _ in range(phase.trades):
-            outbound.send(messaging, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+            outbound.send(messaging, queues, f"trade-{seq:06d}".encode())
             seq += 1
             if after_send is not None:
                 after_send(phase)
@@ -214,7 +209,7 @@ def run_last_hour(
         if after_phase is not None:
             after_phase(phase)
     for _ in range(leave_unconfirmed):
-        outbound.send(messaging, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+        outbound.send(messaging, queues, f"trade-{seq:06d}".encode())
         seq += 1
         if after_send is not None:
             after_send(LAST_HOUR[-1])
