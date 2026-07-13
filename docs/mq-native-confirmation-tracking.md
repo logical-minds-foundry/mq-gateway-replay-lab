@@ -6,12 +6,12 @@
 
 ## 1. Summary
 
-A generic trading back-office runs a **message gateway**: applications connect to it
-over a proprietary protocol, and it forwards each message to a counterparty over IBM
-MQ and records the counterparty's confirmation. For the day's flow to be
-**replayable** — so that after a failure the operators know exactly which messages
-went out without a confirmation and can safely resend them — the gateway must keep an
-authoritative record of every message sent and every confirmation received.
+Many message-based systems exchange traffic with a counterparty over IBM MQ in a
+**request–reply** pattern: each message is forwarded on, and the confirmation that
+comes back is recorded and paired with it. For the day's flow to be **replayable** —
+so that after a failure the operators know exactly which messages went out without a
+confirmation and can safely resend them — the system must keep an authoritative record
+of every message sent and every confirmation received.
 
 This document recommends recording that history the way the queue manager already
 knows how to do it: with an **MQ-native audit copy** of each message and each
@@ -23,11 +23,8 @@ product, or any change to the messages themselves.
 
 The recommendation is not theoretical. Every mechanism and every algorithm below was
 **built as a working prototype and validated in a laboratory** against a real IBM MQ
-**Native HA** queue manager (a three-node group), over **mutual TLS 1.3** — with the
-counterparty on a **separate queue manager reached across a channel**, exactly as in
-production, so the outbound audit is proven against real remote queuing and not a
-local shortcut. The evidence in §9 — a live dashboard and measured numbers — is output
-from that prototype, not an illustration.
+**distributed-queuing architecture**. The evidence in §9 — a live dashboard and
+measured numbers — is output from that prototype, not an illustration.
 
 ---
 
@@ -169,8 +166,8 @@ counterparty with unlimited expiry (as the counterparty expects). Inbound, `CAPE
 `GW.CPB.REPLY.AUDIT` caps the **streamed copy**. Both give a self-clearing one-day audit,
 by different routes.
 
-Every invariant in this section is confirmed on real iron (MQ 9.4.5, a Native-HA main
-queue manager streaming to a separate counterparty queue manager over a live TLS channel):
+Every invariant in this section is confirmed on real iron (a queue manager streaming to
+a separate counterparty queue manager across a channel):
 `CAPEXPRY` on the primary the app streams *from* expires the retained original while the
 streamed copy stays unlimited; streaming fires through the `QALIAS`; the retained audit
 copy and the copy delivered to the counterparty carry an **identical MsgId**; and one
@@ -276,7 +273,7 @@ to build is a small **collector** that, on a schedule:
   set** with ages, and any exceptions.
 
 The collector holds no state that must survive a restart — the audit queues *are* the
-state, and they are as durable and (on Native HA) as replicated as the messaging
+state, and they are as durable and as replicated as the messaging
 itself. It never touches the live path, so it cannot affect throughput. Its output is
 what an operations dashboard and an automated resend both consume.
 
@@ -290,7 +287,7 @@ the code is straightforward once the audit queues and the three algorithms are i
 ## 9. Evidence: a last-hour trading run, live
 
 To show what the collector surfaces, a realistic **last hour of a trading day** was run
-against the live Native HA queue manager, **with the counterparty on a separate queue
+against a live queue manager, **with the counterparty on a separate queue
 manager across a channel** — the real remote topology, so the outbound audit is
 exercised through an actual transmission queue and streamed remote delivery, not a local
 stand-in. The run: a healthy open, then confirmation response times **degrading**, then a
@@ -376,7 +373,7 @@ and size the deployment:
 ---
 
 *Provenance: every mechanism, invariant, and algorithm in this document was implemented
-as a working prototype and validated in a laboratory against a real IBM MQ Native HA
-queue manager over mutual TLS 1.3, with the counterparty on a separate queue manager
+as a working prototype and validated in a laboratory against a real IBM MQ
+distributed-queuing architecture, with the counterparty on a separate queue manager
 reached across a channel — the outbound audit proven through real remote queuing, not a
 local stand-in. The figures in §9 and §10 are measured output from that prototype.*
