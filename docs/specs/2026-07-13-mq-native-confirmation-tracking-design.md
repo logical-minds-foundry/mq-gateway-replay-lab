@@ -224,14 +224,17 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
    expires the **retained original** (scratch queue `CAPEXPRY(100)`=10 s: T0 original
    `Expiry 100`, after 20 s `No more messages`/`CURDEPTH(0)`), while the **streamed copy**
    stays unlimited (`Expiry -1`, still present). The undocumented inversion holds.
-2. **MsgId preserved end-to-end** to `SVCQM` across the real channel — *pending the remote
-   leg*.
-3. `MUSTDUP` retain+transmit genuinely atomic over the remote link — *pending the remote leg*.
-4. ✅ **PROVEN (same test).** Streaming fires on a put via **`QALIAS` resolution** (put to
-   the alias → original on the primary *and* duplicate on the stream target). Transparency
-   confirmed.
-IBM's docs held for what was tested (no doc bug to file). Proofs 2–3 require the full
-remote wiring (QREMOTE → `SVCQM` over the existing channel + our queue on `SVCQM`).
+2. ✅ **PROVEN (live, 2026-07-13).** **MsgId preserved end-to-end** — a scratch primary on
+   `NHAUAPP` (active node `nha-ubuntu-a2`) streamed to a `QREMOTE` reusing the existing
+   `XMITQ(SVCQM)` + channel `NHAUAPP.SVCQM`; the retained audit copy and the copy delivered
+   to `SVCQM` both carry MsgId `X'414D51204E484155415050...27EA516A059A4341'` (identical).
+3. ✅ **PROVEN (same test).** `MUSTDUP` retain+transmit — one put yielded both the retained
+   audit copy (`PRIMARY CURDEPTH 1`) and the transmitted copy delivered to `SVCQM`
+   (`CURDEPTH 1`), and the XMITQ drained to 0. Retain and transmit happened together.
+4. ✅ **PROVEN.** Streaming fires on a put via **`QALIAS` resolution** (put to the alias →
+   original on the primary *and* duplicate on the stream target). Transparency confirmed.
+**All four proofs pass on real iron** (MQ 9.4.5, Native-HA main QM → `SVCQM` over a live
+TLS channel). IBM's docs held; no bug to file. The design is validated end-to-end.
 
 **Impact.** The three algorithms, the collector, the observability, and reconciliation
 are **transport-agnostic and unchanged**. What changes: (1) the outbound MQ objects

@@ -175,12 +175,13 @@ counterparty with unlimited expiry (as the counterparty expects). Inbound, `CAPE
 `GW.CPB.REPLY.AUDIT` caps the **streamed copy**. Both give a self-clearing one-day audit,
 by different routes.
 
-> ⟨PROVEN (MQ 9.4.5): `CAPEXPRY` on the primary the app streams *from* expires the
-> retained original (capped to 10 s in a scratch test, gone after; the streamed copy
-> stayed unlimited) — the inverse of the documented secondary-caps-streamed-copy behavior,
-> confirmed live. Streaming also fires correctly through the `QALIAS`. Still to validate on
-> the live remote link: MsgId preservation end-to-end and `MUSTDUP` atomicity over the
-> channel.⟩
+> ⟨PROVEN end-to-end (MQ 9.4.5, live: a Native-HA main queue manager → a separate
+> counterparty queue manager over a real TLS channel). `CAPEXPRY` on the primary the app
+> streams *from* expires the retained original while the streamed copy stays unlimited (the
+> inverse of the documented behavior); streaming fires through the `QALIAS`; the retained
+> audit copy and the copy delivered to the counterparty carry an **identical MsgId**; and
+> one `MUSTDUP` put both retains the audit and transmits the duplicate. Every invariant in
+> this section is confirmed on real iron.⟩
 
 ---
 
