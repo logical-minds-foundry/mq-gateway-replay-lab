@@ -40,7 +40,7 @@ dashboard, and document.
    referencing message-header fields — never a code block in any language.
 2. **Absolute anonymization (repo rule).** Fully generic vocabulary throughout:
    "the application team", Counterparty A/B, invented queue/host names
-   (`GW.CPB.SEND`, etc.). The committed artifact contains no client-identifiable
+   (`GW.CPB.REQUEST`, etc.). The committed artifact contains no client-identifiable
    content. The author maps generic names to the real estate mentally when
    presenting; there is no committed mapping.
 3. **`AUDIT` naming.** Adopt IBM's own streaming-queue example vocabulary: the
@@ -191,19 +191,21 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
 
 **Corrected mechanism.**
 
-- **Outbound.** The app puts to a **local** queue (`GW.CPB.SEND`) that **is the outbound
-  audit** — the retained original. Its `STREAMQ` target is a **remote-queue definition**
-  (`GW.CPB.SEND.TO.SVC` → the counterparty QM `SVCQM`, over the lab's *existing* XMITQ +
-  sender channel). One put, `STRMQOS(MUSTDUP)`: the queue manager retains the original
-  locally and transmits the **duplicate** to the counterparty. Must-duplicate guarantees
-  the duplicate reaches the **XMITQ** (not that the channel has delivered) — correct,
-  since an untransmitted message is rightly unconfirmed.
+- **Outbound.** The app puts to `GW.CPB.REQUEST` — a **`QALIAS`** onto
+  `GW.CPB.REQUEST.AUDIT`, so the audit, the retention, and the streaming are all invisible
+  to the app (transparency restored). `GW.CPB.REQUEST.AUDIT` is the local queue that **is
+  the outbound audit** (retained original); its `STREAMQ` target is a **remote-queue
+  definition** `GW.CPB.REQUEST.REMOTE` → the counterparty QM `SVCQM`, over the lab's
+  *existing* XMITQ + sender channel. One put, `STRMQOS(MUSTDUP)`: the queue manager retains
+  the original locally and transmits the **duplicate** to the counterparty. Must-duplicate
+  guarantees the duplicate reaches the **XMITQ** (not that the channel has delivered) —
+  correct, since an untransmitted message is rightly unconfirmed.
 - **Inbound.** Confirmations arrive across the return channel onto the **application**
   reply queue `GW.CPB.REPLY` (drained by the gateway), which streams a **duplicate** to
   the local **audit** `GW.CPB.REPLY.AUDIT`.
 - **The `CAPEXPRY` asymmetry (the crux).** Retention runs through two *different*
   behaviors:
-  - **Outbound:** `CAPEXPRY(864000)` on the **primary** (`GW.CPB.SEND`) must cap the
+  - **Outbound:** `CAPEXPRY(864000)` on the **primary** (`GW.CPB.REQUEST.AUDIT`) must cap the
     **retained original** to 24 h. The **streamed copy** to the counterparty gets
     `MQEI_UNLIMITED` (the secondary is the remote queue, which has no `CAPEXPRY`) — correct
     for delivery. This is the **inverse** of what IBM documents (`CAPEXPRY` on the
@@ -214,14 +216,15 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
 - **Still a single put per side.** Zero audit *logic*; the only cost is lost transparency
   (the app knowingly puts to the audit-named queue). Cheaper than the two-put alternative,
   which is why the streaming pattern (A) is chosen over two-put-under-syncpoint (B).
-- Reconciliation browses `GW.CPB.SEND` (outbound audit) and `GW.CPB.REPLY.AUDIT` (inbound
+- Reconciliation browses `GW.CPB.REQUEST.AUDIT` (outbound audit) and `GW.CPB.REPLY.AUDIT` (inbound
   audit).
 
 **Load-bearing live proofs (gate everything).** 1. `CAPEXPRY` on the outbound primary
 expires the retained original at 24 h (the undocumented inversion). 2. **MsgId is
 preserved end-to-end** to `SVCQM` across the real channel. 3. `MUSTDUP` retain+transmit
-is genuinely atomic over the remote link. If observed behavior diverges from IBM's docs,
-file a doc bug and record reality.
+is genuinely atomic over the remote link. 4. Streaming fires on a put that arrives via
+**`QALIAS` resolution** (low risk, but confirm — the alias is what makes it transparent).
+If observed behavior diverges from IBM's docs, file a doc bug and record reality.
 
 **Impact.** The three algorithms, the collector, the observability, and reconciliation
 are **transport-agnostic and unchanged**. What changes: (1) the outbound MQ objects

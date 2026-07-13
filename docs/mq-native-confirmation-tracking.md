@@ -71,11 +71,12 @@ work**, with the **same message identifier**, and with no application code invol
 counterparty sits across a channel on another queue manager, so the two directions use
 this mechanism slightly differently:
 
-- **Outbound.** The gateway puts each message to a **local** queue whose streaming
-  target is a **remote-queue definition** pointing at the counterparty's queue manager.
-  The queue manager **retains the original locally** — that retained queue is the
-  **outbound audit** — and **transmits a duplicate** to the counterparty (over a
-  transmission queue and sender channel). Both actions are one unit of work.
+- **Outbound.** The application puts to a normal-looking queue name, which is an **alias**
+  onto a local **audit** queue — so the audit is invisible to the app. That audit queue's
+  streaming target is a **remote-queue definition** pointing at the counterparty's queue
+  manager: the queue manager **retains the original locally** (the outbound audit) and
+  **transmits a duplicate** to the counterparty (over a transmission queue and sender
+  channel), in one unit of work. The app sees only an ordinary request queue.
 - **Inbound.** The counterparty's confirmation arrives across a channel onto a **local**
   reply queue. That reply queue streams a copy to a **local inbound audit** queue; the
   gateway consumes the confirmation as usual, and the audit copy is retained.
@@ -112,22 +113,25 @@ the counterparty's own coordinates.
 
 ```mqsc
 * --- OUTBOUND ---------------------------------------------------------------
-* The gateway puts here. The ORIGINAL is retained on this queue (the outbound
-* audit); a DUPLICATE is streamed onward to the counterparty. CAPEXPRY gives it
-* a self-clearing rolling-day retention (value in tenths of a second; 864000 = 24 h).
-DEFINE QLOCAL('GW.CPB.SEND') DEFPSIST(YES) SHARE MAXDEPTH(999999999) CAPEXPRY(864000)
+* The app opens GW.CPB.REQUEST, a normal-looking queue — and is unaware of everything
+* below it. GW.CPB.REQUEST is an ALIAS onto the audit queue, so the audit copy, the
+* retention, and the onward streaming are all invisible to the application.
+DEFINE QALIAS('GW.CPB.REQUEST') TARGET('GW.CPB.REQUEST.AUDIT')
 
-* The stream target: a remote-queue definition resolving to the counterparty's
-* queue, via a transmission queue drained by a sender channel.
-DEFINE QREMOTE('GW.CPB.SEND.TO.CPB') RNAME('<counterparty inbound queue>') +
+* The app's put resolves here. The ORIGINAL is retained on this queue (the outbound
+* audit); CAPEXPRY caps it to a rolling day (tenths of a second; 864000 = 24 h). Its
+* stream target is the counterparty, so a DUPLICATE is sent on — one put, MUSTDUP,
+* both-or-neither, same MsgId, no application logic.
+DEFINE QLOCAL('GW.CPB.REQUEST.AUDIT') DEFPSIST(YES) SHARE MAXDEPTH(999999999) CAPEXPRY(864000)
+ALTER  QLOCAL('GW.CPB.REQUEST.AUDIT') STREAMQ('GW.CPB.REQUEST.REMOTE') STRMQOS(MUSTDUP)
+
+* The stream target: a remote-queue definition resolving to the counterparty's queue,
+* via a transmission queue drained by a sender channel — none of it visible to the app.
+DEFINE QREMOTE('GW.CPB.REQUEST.REMOTE') RNAME('<counterparty inbound queue>') +
        RQMNAME('<counterparty qmgr>') XMITQ('<xmitq to counterparty>')
 DEFINE QLOCAL('<xmitq to counterparty>') USAGE(XMITQ)
 DEFINE CHANNEL('NHAUAPP.TO.CPB') CHLTYPE(SDR) TRPTYPE(TCP) +
        CONNAME('<counterparty host>(1414)') XMITQ('<xmitq to counterparty>')
-
-* One put; the queue manager retains the original AND streams a duplicate to the
-* counterparty — same MsgId, one unit of work, both-or-neither. No application logic.
-ALTER  QLOCAL('GW.CPB.SEND') STREAMQ('GW.CPB.SEND.TO.CPB') STRMQOS(MUSTDUP)
 
 * --- INBOUND ----------------------------------------------------------------
 * Confirmations arrive from the counterparty (across a return channel) onto a local
@@ -161,10 +165,12 @@ Three invariants make the record trustworthy, and the collector below depends on
 `MAXDEPTH` is set high because a full day of audit traffic far exceeds the default; the
 single queue-file limit is not a concern (its default ceiling is roughly two terabytes,
 far above a day's volume). Reconciliation (below) browses the **outbound audit** — the
-retained originals on `GW.CPB.SEND` — and the **inbound audit**, `GW.CPB.REPLY.AUDIT`.
+retained originals on `GW.CPB.REQUEST.AUDIT` — and the **inbound audit**,
+`GW.CPB.REPLY.AUDIT`.
 
-On retention, note the deliberate asymmetry. Outbound, `CAPEXPRY` on `GW.CPB.SEND` caps
-the **retained original** to a rolling day, while the duplicate is transmitted to the
+On retention, note the deliberate asymmetry. Outbound, `CAPEXPRY` on
+`GW.CPB.REQUEST.AUDIT` caps the **retained original** to a rolling day, while the
+duplicate is transmitted to the
 counterparty with unlimited expiry (as the counterparty expects). Inbound, `CAPEXPRY` on
 `GW.CPB.REPLY.AUDIT` caps the **streamed copy**. Both give a self-clearing one-day audit,
 by different routes.
