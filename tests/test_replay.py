@@ -12,7 +12,7 @@ QS = QueueSet.for_counterparty("CPB")
 
 def _streamed_fake() -> FakeMessaging:
     fm = FakeMessaging()
-    fm.configure_stream(QS.send, QS.send_audit)
+    fm.configure_stream(QS.request, QS.request_audit)
     fm.configure_stream(QS.reply, QS.reply_audit)
     return fm
 
@@ -36,18 +36,18 @@ def test_resend_re_transmits_by_original_msgid() -> None:
     assert [u.msg_id for u in un] == [b"1"]
 
     assert resend(fm, QS, un) == 1
-    assert all(m.msg_id == b"1" for m in fm.browse(QS.send))
+    assert all(m.msg_id == b"1" for m in fm.browse(QS.request))
 
 
 def test_replayed_message_is_reconfirmed_not_reprocessed() -> None:
     fm = _streamed_fake()
-    fm.put(QS.send, Message(b"trade", b"1"))
+    fm.put(QS.request, Message(b"trade", b"1"))
     fm.commit()
     responder = Responder(fm, QS)
 
     assert responder.process_one() == "replied"
 
-    fm.put(QS.send, Message(b"trade", b"1"))  # the same MsgId comes back
+    fm.put(QS.request, Message(b"trade", b"1"))  # the same MsgId comes back
     fm.commit()
     assert responder.process_one() == "reconfirmed"  # I2: not processed twice
 

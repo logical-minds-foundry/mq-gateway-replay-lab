@@ -24,6 +24,6 @@ def resend(messaging: Messaging, queues: QueueSet, items: list[Unconfirmed]) -> 
     reconciliation.
     """
     for item in items:
-        messaging.put(queues.send, Message(body=item.body, msg_id=item.msg_id))
+        messaging.put(queues.request, Message(body=item.body, msg_id=item.msg_id))
         messaging.commit()
     return len(items)

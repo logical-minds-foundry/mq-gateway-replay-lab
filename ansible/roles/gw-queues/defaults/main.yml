@@ -3,8 +3,8 @@
 counterparty: CPB
 
 # Named queues (match gwlab's QueueSet).
-q_send: "GW.{{ counterparty }}.SEND"
-q_send_audit: "GW.{{ counterparty }}.SEND.AUDIT"
+q_request: "GW.{{ counterparty }}.REQUEST"
+q_request_audit: "GW.{{ counterparty }}.REQUEST.AUDIT"
 q_reply: "GW.{{ counterparty }}.REPLY"
 q_reply_audit: "GW.{{ counterparty }}.REPLY.AUDIT"
 
@@ -13,20 +13,20 @@ q_reply_audit: "GW.{{ counterparty }}.REPLY.AUDIT"
 # else belong to the lab and are declare-and-verified, never mutated.
 #
 # The audit copies are produced by the QUEUE MANAGER via streaming queues
-# (STRMQOS(MUSTDUP)): every put to SEND is atomically copied to SEND.AUDIT, and
-# every confirmation arriving on REPLY is copied to REPLY.AUDIT — with no
-# application logic (the primary audit copy; research #54). The app-level
-# two-put / get-copy is the fallback (gwlab.outbound / gwlab.inbound).
-# Reconciliation browses the .AUDIT queues only.
+# (STRMQOS(MUSTDUP)): every put to REQUEST is atomically copied to
+# REQUEST.AUDIT, and every confirmation arriving on REPLY is copied to
+# REPLY.AUDIT — with no application logic (the primary audit copy; research
+# #54). The app-level two-put / get-copy is the fallback (gwlab.outbound /
+# gwlab.inbound). Reconciliation browses the .AUDIT queues only.
 gw_queues:
-  - "{{ q_send }}"
-  - "{{ q_send_audit }}"
+  - "{{ q_request }}"
+  - "{{ q_request_audit }}"
   - "{{ q_reply }}"
   - "{{ q_reply_audit }}"
 
 # Each live queue MUSTDUP-copies to its audit queue — [live_queue, audit_queue].
 gw_streams:
-  - ["{{ q_send }}", "{{ q_send_audit }}"]
+  - ["{{ q_request }}", "{{ q_request_audit }}"]
   - ["{{ q_reply }}", "{{ q_reply_audit }}"]
 
 # Sizing for production-scale volume (capacity analysis in the epic). A day of
@@ -45,7 +45,7 @@ gw_audit_capexpry: 864000
 
 # The audit queues that carry the rolling-retention cap.
 gw_audits:
-  - "{{ q_send_audit }}"
+  - "{{ q_request_audit }}"
   - "{{ q_reply_audit }}"
 
 # qmgr_name is intentionally left unset — it must be provided at apply time (the

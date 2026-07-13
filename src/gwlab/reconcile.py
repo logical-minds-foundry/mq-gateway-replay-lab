@@ -119,7 +119,7 @@ class DailyReport:
 
 
 def _split(messaging: Messaging, queues: QueueSet) -> tuple[list[Unconfirmed], int]:
-    sent = messaging.browse(queues.send_audit)
+    sent = messaging.browse(queues.request_audit)
     replies = messaging.browse(queues.reply_audit)
     confirmed_ids = {reply.correl_id for reply in replies}
     unmatched = [
@@ -171,7 +171,7 @@ def _on_day(messages: list[Message], day: date) -> list[tuple[Message, datetime]
 def report(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyReport:
     """Scan both audit queues once and return today's aggregates and unconfirmed set."""
     day = now.date()
-    sent = _on_day(messaging.browse(queues.send_audit), day)
+    sent = _on_day(messaging.browse(queues.request_audit), day)
     replies = _on_day(messaging.browse(queues.reply_audit), day)
     reply_time_by_key = {message.correl_id: put_time for message, put_time in replies}
 

@@ -29,7 +29,7 @@ class UnreconciledDayError(RuntimeError):
 
 def clear_audits(messaging: Messaging, queues: QueueSet) -> int:
     """Empty both audit queues. Returns the total number of messages cleared."""
-    return messaging.clear(queues.send_audit) + messaging.clear(queues.reply_audit)
+    return messaging.clear(queues.request_audit) + messaging.clear(queues.reply_audit)
 
 
 def start_of_day(messaging: Messaging, queues: QueueSet) -> int:

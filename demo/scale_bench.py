@@ -30,7 +30,7 @@ def _load(n: int) -> FakeMessaging:
     fm = FakeMessaging()
     confirmed = int(n * _CONFIRMED_FRACTION)
     # Load committed audit queues directly — we are timing the scan, not the puts.
-    fm._committed[_QS.send_audit] = [  # noqa: SLF001 — benchmark harness
+    fm._committed[_QS.request_audit] = [  # noqa: SLF001 — benchmark harness
         Message(b"trade", i.to_bytes(24, "big"), put_time=_DAY) for i in range(n)
     ]
     fm._committed[_QS.reply_audit] = [  # noqa: SLF001

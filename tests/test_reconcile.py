@@ -29,7 +29,7 @@ NOW = datetime(2026, 7, 8, 16, 20, 0)  # noqa: DTZ001 — injected clock, determ
 
 def _audit_sent(fm: FakeMessaging, *msg_ids: bytes) -> None:
     for msg_id in msg_ids:
-        fm.put(QS.send_audit, Message(b"t", msg_id))
+        fm.put(QS.request_audit, Message(b"t", msg_id))
     fm.commit()
 
 
@@ -40,7 +40,7 @@ def _audit_replies(fm: FakeMessaging, *correl_ids: bytes) -> None:
 
 
 def _send_at(fm: FakeMessaging, msg_id: bytes, put_time: datetime) -> None:
-    fm.put(QS.send_audit, Message(b"t", msg_id, put_time=put_time))
+    fm.put(QS.request_audit, Message(b"t", msg_id, put_time=put_time))
     fm.commit()
 
 
@@ -88,8 +88,8 @@ def test_reconciliation_browses_only_the_audit_queues_never_live_queues() -> Non
     fm = RecordingBrowse()
     _audit_sent(fm, b"1")
     assert unconfirmed(fm, QS) == [Unconfirmed(b"1", b"t")]
-    assert set(fm.browsed) <= {QS.send_audit, QS.reply_audit}
-    assert QS.send not in fm.browsed
+    assert set(fm.browsed) <= {QS.request_audit, QS.reply_audit}
+    assert QS.request not in fm.browsed
     assert QS.reply not in fm.browsed
 
 

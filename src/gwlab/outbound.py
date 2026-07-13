@@ -29,7 +29,7 @@ def send(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> 
     itself fails, so there is no "sent but unaudited" state (I1) — enforced by
     the queue manager, not the app.
     """
-    messaging.put(queues.send, Message(body=body, msg_id=msg_id))
+    messaging.put(queues.request, Message(body=body, msg_id=msg_id))
     messaging.commit()
     return msg_id
 
@@ -40,7 +40,7 @@ def send_via_two_put(messaging: Messaging, queues: QueueSet, body: bytes, msg_id
     audit copy, for queue managers where streaming is not configured.
     """
     message = Message(body=body, msg_id=msg_id)
-    messaging.put(queues.send, message)
-    messaging.put(queues.send_audit, message)
+    messaging.put(queues.request, message)
+    messaging.put(queues.request_audit, message)
     messaging.commit()
     return msg_id

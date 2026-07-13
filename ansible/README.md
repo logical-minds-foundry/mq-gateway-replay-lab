@@ -11,8 +11,8 @@ For counterparty tag `CPB` (the default):
 
 | Queue | Role |
 |-------|------|
-| `GW.CPB.SEND` | Outbound to the (simulated) counterparty; the responder drains it |
-| `GW.CPB.SEND.AUDIT` | Outbound audit queue — the replay copy |
+| `GW.CPB.REQUEST` | Outbound to the (simulated) counterparty; the responder drains it |
+| `GW.CPB.REQUEST.AUDIT` | Outbound audit queue — the replay copy |
 | `GW.CPB.REPLY` | Confirmations arrive here from the responder |
 | `GW.CPB.REPLY.AUDIT` | Inbound audit queue — the authoritative "processed" ledger |
 
@@ -20,8 +20,8 @@ All four are `QLOCAL`, `DEFPSIST(YES)` (persistent). This is the **self-containe
 single-queue-manager demo topology**: the responder plays the counterparty
 locally, so no channels or remote queue-manager wiring is touched.
 
-The **audit copies are produced by the queue manager**, not the app: `SEND` and
-`REPLY` are configured `STREAMQ(<their>.AUDIT) STRMQOS(MUSTDUP)`, so every
+The **audit copies are produced by the queue manager**, not the app: `REQUEST`
+and `REPLY` are configured `STREAMQ(<their>.AUDIT) STRMQOS(MUSTDUP)`, so every
 message is atomically copied to its audit queue with the same MsgId and no
 application logic (the primary audit copy; research `#54`). `MUSTDUP` gives the
 both-or-neither guarantee — if the copy cannot be written, the original put

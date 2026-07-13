@@ -14,7 +14,8 @@ NOW = datetime(2026, 7, 8, 16, 20, 0)  # noqa: DTZ001 — injected clock, determ
 
 def _seed(fm: FakeMessaging, *, sent: int, confirmed: int) -> None:
     for i in range(sent):
-        fm.put(QS.send_audit, Message(b"t", str(i).encode(), put_time=NOW - timedelta(minutes=1)))
+        msg = Message(b"t", str(i).encode(), put_time=NOW - timedelta(minutes=1))
+        fm.put(QS.request_audit, msg)
     for i in range(confirmed):
         reply = Message(b"r", b"R", correl_id=str(i).encode(), put_time=NOW - timedelta(seconds=30))
         fm.put(QS.reply_audit, reply)
@@ -47,7 +48,7 @@ def test_render_emits_scan_cost_gauges() -> None:
 def test_render_emits_per_message_unconfirmed_series() -> None:
     fm = FakeMessaging()
     fm.put(
-        QS.send_audit,
+        QS.request_audit,
         Message(b"t", bytes.fromhex("9f0a17f3"), put_time=NOW - timedelta(minutes=40)),
     )
     fm.commit()
@@ -62,7 +63,7 @@ def test_render_emits_per_message_unconfirmed_series() -> None:
 def test_render_exposes_unexpected_confirmations() -> None:
     fm = FakeMessaging()
     # one confirmed, one orphan reply (CorrelId 999 was never sent)
-    fm.put(QS.send_audit, Message(b"t", b"1", put_time=NOW - timedelta(minutes=5)))
+    fm.put(QS.request_audit, Message(b"t", b"1", put_time=NOW - timedelta(minutes=5)))
     fm.commit()
     fm.put(
         QS.reply_audit, Message(b"r", b"R:1", correl_id=b"1", put_time=NOW - timedelta(minutes=4))

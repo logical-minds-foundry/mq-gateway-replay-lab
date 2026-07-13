@@ -98,7 +98,7 @@ def _drain_confirmed(messaging: Messaging, queues: QueueSet, responder: Responde
 
 def _drain_outage(messaging: Messaging, queues: QueueSet) -> None:
     """The counterparty receives the requests but sends no confirmation (the outage)."""
-    while messaging.get(queues.send) is not None:
+    while messaging.get(queues.request) is not None:
         messaging.commit()
 
 

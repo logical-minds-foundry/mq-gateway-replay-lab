@@ -48,7 +48,7 @@ def main() -> int:
 
     for i in range(1, N_TRADES + 1):
         outbound.send(gw, qs, f"TRADE-{i}".encode(), _msgid(i))
-    print(f"sent {N_TRADES} trades to {qs.send} (QM streams the audit copy, MUSTDUP)")
+    print(f"sent {N_TRADES} trades to {qs.request} (QM streams the audit copy, MUSTDUP)")
     _counts("after send", gw, qs)
 
     responder = Responder(cp, qs, drop_every=DROP_EVERY)

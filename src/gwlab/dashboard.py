@@ -225,7 +225,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             3,
             f"Transmit → {counterparty} (live depth)",
             _grid(8, 3, 8, 4),
-            _ibmmq("depth", qmgr, qs.send),
+            _ibmmq("depth", qmgr, qs.request),
             ds_uid,
             description="Depth of the live outbound queue — the hot path, not the audit queue.",
         ),
@@ -300,7 +300,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             [
                 _target(
                     "A",
-                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.send_audit),
+                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.request_audit),
                     "Sent/s",
                     ds_uid,
                 ),
