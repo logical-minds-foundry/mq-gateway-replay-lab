@@ -26,6 +26,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gwlab import inbound, outbound
+from gwlab.messaging import Message
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -56,6 +57,16 @@ TROUBLED_DAY: tuple[Phase, ...] = (
     Phase("midday", 24, confirm=True),
     Phase("outage", 18, confirm=False),
     Phase("recovery", 16, confirm=True),
+)
+
+# The last hour of a trading day: steady, a slowdown, a ~10-minute block whose
+# backlog recovers (unlike TROUBLED_DAY's outage, which is left stranded), then a
+# small end-of-day unconfirmed tail. See ``run_last_hour``.
+LAST_HOUR: tuple[Phase, ...] = (
+    Phase("steady", 20, confirm=True),
+    Phase("slowdown", 16, confirm=True),
+    Phase("block", 10, confirm=False),
+    Phase("recovery", 12, confirm=True),
 )
 
 
@@ -119,4 +130,63 @@ def run_day(
             _drain_outage(messaging, queues)
         if after_phase is not None:
             after_phase(phase)
+    return seq
+
+
+def _inject_orphan_reply(messaging: Messaging, queues: QueueSet) -> None:
+    """A confirmation whose CorrelId matches no sent MsgId — the should-never
+    -happen anomaly (Algorithm 3). Put on the reply queue; the stream audits it
+    on arrival, same as any other reply.
+    """
+    orphan = Message(body=b"orphan", msg_id=b"R:orphan", correl_id=b"\xffNOSENT")
+    messaging.put(queues.reply, orphan)
+    messaging.commit()
+
+
+def run_last_hour(
+    messaging: Messaging,
+    queues: QueueSet,
+    responder: Responder,
+    *,
+    after_send: Callable[[Phase], None] | None = None,
+    after_phase: Callable[[Phase], None] | None = None,
+    leave_unconfirmed: int = 3,
+    inject_anomaly: bool = True,
+) -> int:
+    """The last hour of a trading day: steady, slowdown, a block, recovery, a
+    small end-of-day unconfirmed tail, and one injected anomaly.
+
+    Unlike ``run_day``'s ``outage`` phase (whose backlog is permanently
+    stranded by ``_drain_outage``), this scenario's ``block`` backlog must
+    *survive* into ``recovery`` so it gets confirmed there — the backlog climbs
+    then drains, rather than being left outstanding. That means ``run_day``
+    cannot be reused for the ``block`` phase, so ``LAST_HOUR`` is iterated
+    locally here: during ``block`` requests are sent and audited but not
+    drained at all; ``recovery``'s ``_drain_confirmed`` then processes both the
+    block backlog and the recovery trades in one pass.
+
+    The tail sends ``leave_unconfirmed`` trades that are audited but never
+    confirmed — the end-of-day outstanding set — and, when ``inject_anomaly``
+    is set, one orphan reply is injected as the should-never-happen anomaly.
+    """
+    seq = 0
+    for phase in LAST_HOUR:
+        for _ in range(phase.trades):
+            outbound.send(messaging, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+            seq += 1
+            if after_send is not None:
+                after_send(phase)
+        if phase.confirm:
+            _drain_confirmed(messaging, queues, responder)
+        # else: the block phase — send only, no drain, so its backlog survives
+        # into recovery instead of being stranded (contrast run_day's outage).
+        if after_phase is not None:
+            after_phase(phase)
+    for _ in range(leave_unconfirmed):
+        outbound.send(messaging, queues, f"trade-{seq:06d}".encode(), _msgid(seq))
+        seq += 1
+        if after_send is not None:
+            after_send(LAST_HOUR[-1])
+    if inject_anomaly:
+        _inject_orphan_reply(messaging, queues)
     return seq
