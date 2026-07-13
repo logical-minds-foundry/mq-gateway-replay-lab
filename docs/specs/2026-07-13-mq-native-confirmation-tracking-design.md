@@ -73,12 +73,20 @@ Location: `docs/mq-native-confirmation-tracking.md` (new, generic, committed).
    **specific unconfirmed messages** (MsgId, sent-time, age). Scoped to the current
    trading day (self-clearing via `CAPEXPRY`). Note the scale lever (local bindings
    + incremental high-water-mark) as a described refinement.
-7. **The collector** — what the client's engineers build, described conceptually;
+7. **Algorithm 3 — anomaly detection (unexpected confirmations).** The mirror of
+   reconciliation: a confirmation whose CorrelId matches **no** sent MsgId (an
+   orphan reply), or a **duplicate** confirmation for a MsgId already confirmed.
+   Framed explicitly as a *should-never-happen* exception — unlike a missing
+   confirmation, which is a benign, expected glitch (a message lost in transit),
+   an orphan/duplicate reply signals a genuine correctness fault and is flagged
+   as an exception. Same browse, opposite set difference (confirmation CorrelIds
+   with no matching sent MsgId) plus a duplicate check.
+8. **The collector** — what the client's engineers build, described conceptually;
    explicitly noted as prototyped and proven in the lab. No language, no code.
-8. **Evidence** — the last-hour dashboard screenshot plus hard numbers from real
+9. **Evidence** — the last-hour dashboard screenshot plus hard numbers from real
    runs.
-9. **Scale** — where the bottleneck actually is, with measured numbers.
-10. **Questions for the application team** — the Phase-1 payload (forwarding,
+10. **Scale** — where the bottleneck actually is, with measured numbers.
+11. **Questions for the application team** — the Phase-1 payload (forwarding,
     volumes, topology, recovery objective, data-at-rest, HA appetite).
 
 The provenance thread surfaces in three places: the summary (the claim), the
@@ -90,6 +98,9 @@ earns it).
 - **Reconciliation, live end-of-day:** sent / confirmed / unconfirmed, mean confirm
   latency, and the specific unconfirmed set by MsgId + age — read straight off the
   audit queues.
+- **Anomaly detection, live:** the board surfaces the injected orphan/duplicate
+  reply as an *unexpected confirmation* exception — demonstrating the should-
+  never-happen fault is caught, not silently ignored.
 - **Scale (measured):** the diff is ~0.5 µs/header (a 1M-trade day reconciles in
   ~1.1 s of CPU); the client-mode `MQGET(BROWSE)` round-trip (~640 µs/header) is the
   real bottleneck (~21 minutes for a full-archive 1M-trade scan) — hence the
@@ -108,13 +119,17 @@ against `NHAUAPP` to capture a real board:
 - response times **degrade** (a slowdown), then
 - a **~10-minute block** (no confirmations arrive), then
 - **recovery**, but
-- **2–3 trades never get a reply**, left unconfirmed at end of day.
+- **2–3 trades never get a reply**, left unconfirmed at end of day, and
+- near end-of-day, **one injected anomaly** — an orphan reply (a confirmation whose
+  CorrelId matches no sent MsgId) or a duplicate confirmation — so the board also
+  demonstrates Algorithm 3's exception signal.
 
-This lets the board show (a) the latency-degradation curve and (b) the specific
-small unconfirmed set — enough to demonstrate what the dashboard highlights without
-running a literal full day. The observability panel shows the last hour, not a full
-day. This differs from the existing `TROUBLED_DAY` scenario (which leaves the whole
-outage unconfirmed); the new one recovers almost everything and leaves a handful.
+This lets the board show (a) the latency-degradation curve, (b) the specific small
+unconfirmed set, and (c) the unexpected-confirmation exception — enough to
+demonstrate what the dashboard highlights without running a literal full day. The
+observability panel shows the last hour, not a full day. This differs from the
+existing `TROUBLED_DAY` scenario (which leaves the whole outage unconfirmed); the new
+one recovers almost everything and leaves a handful, plus the single anomaly.
 
 ## Epic #49 task breakdown
 
@@ -126,10 +141,12 @@ confirmed, so the tasks are fixed first). A spec/plan is added under
    naming, so the screenshot and the document are consistent. Also remove the stale
    "two-put-under-syncpoint / streaming queues deliberately not used" hard rule from
    `CLAUDE.md`, which contradicts the real streaming-queue design.
-2. **Last-hour scenario + live run + screenshot** — add the new scenario; run it
+2. **Last-hour scenario + anomaly + live run + screenshot** — add the new scenario
+   (including the injected orphan/duplicate reply); extend reconciliation with the
+   Algorithm 3 unexpected-confirmation signal and surface it on the board; run it
    live against `NHAUAPP`; capture the dashboard screenshot for the document.
 3. **Write the recommendation document** — `docs/mq-native-confirmation-tracking.md`
-   per the structure and constraints above.
+   per the structure and constraints above (three algorithms).
 
 **Order:** rename first (so the screenshot is consistent) → run + capture → write
 the document and drop in the real figure.
@@ -138,8 +155,8 @@ the document and drop in the real figure.
 
 - A committed, fully generic `docs/mq-native-confirmation-tracking.md` that a
   competent MQ engineer who has never met the author could build from.
-- Contains no code — only prose, described algorithms, MQSC snippets, and one
-  dashboard screenshot.
+- Contains no code — only prose, the three described algorithms, MQSC snippets, and
+  one dashboard screenshot.
 - Makes the provenance unmistakable: proven algorithm + proven implementation,
   backed by measured numbers and a real board.
 - `AUDIT` naming is consistent across code, dashboard, and document.
