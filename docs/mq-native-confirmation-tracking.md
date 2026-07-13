@@ -149,8 +149,10 @@ audit mechanism itself.
 Three invariants make the record trustworthy, and the collector below depends on them:
 
 1. **The message identifier is preserved** into the streamed copy, so both the retained
-   original and the transmitted duplicate carry the identifier the gateway sent under —
-   and the outbound audit can be matched to the confirmations exactly.
+   original and the transmitted duplicate carry the same identifier — and the outbound
+   audit can be matched to the confirmations exactly. Let the **queue manager mint that
+   identifier** (it guarantees global uniqueness); the gateway reads it back to track the
+   message, rather than hand-assigning a predetermined value.
 2. **The confirmation echoes the request's identifier.** By convention the counterparty
    returns the request's message identifier as the **correlation identifier** of its
    confirmation. That echo is what makes a confirmation match its request
