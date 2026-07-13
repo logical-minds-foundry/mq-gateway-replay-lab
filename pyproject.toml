@@ -42,7 +42,8 @@ testpaths = ["tests"]
 [tool.coverage.run]
 # The pymqi adapter needs the MQ client libraries, so it cannot run in the
 # validation container. It is verified end-to-end on the live queue manager
-# (see demo/live_demo.py + the issue evidence), not by unit tests. The exporter
+# (the two-process last-hour run — demo/gateway_driver.py + demo/svc_responder.py
+# — plus the remote proof harnesses under demo/proofs/), not by unit tests. The exporter
 # HTTP server binds a socket and connects via pymqi, so it is likewise box-only;
 # the exposition it serves (exporter.render) is unit-tested.
 omit = [
