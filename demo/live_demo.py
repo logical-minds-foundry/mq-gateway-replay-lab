@@ -2,7 +2,7 @@
 
 send trades → the counterparty drops one confirmation → reconcile isolates the
 unconfirmed one → replay → the counterparty re-confirms (not re-processes) →
-the backlog drains to zero. The archives are produced by the queue manager's
+the backlog drains to zero. The audit queues are produced by the queue manager's
 streaming queues (STRMQOS(MUSTDUP)); this driver only does single puts/gets — the
 exact same gwlab code that runs against the in-memory fake, now against real MQ.
 
@@ -44,11 +44,11 @@ def main() -> int:
     cp = gw  # one process → share the connection (real apps would be separate procs)
     print(f"connected to {QM} via {CHANNEL} ({CONN})")
 
-    print(f"start-of-day: cleared {dayboundary.start_of_day(gw, qs)} archived message(s)")
+    print(f"start-of-day: cleared {dayboundary.start_of_day(gw, qs)} audited message(s)")
 
     for i in range(1, N_TRADES + 1):
         outbound.send(gw, qs, f"TRADE-{i}".encode(), _msgid(i))
-    print(f"sent {N_TRADES} trades to {qs.send} (QM streams the archive, MUSTDUP)")
+    print(f"sent {N_TRADES} trades to {qs.send} (QM streams the audit copy, MUSTDUP)")
     _counts("after send", gw, qs)
 
     responder = Responder(cp, qs, drop_every=DROP_EVERY)

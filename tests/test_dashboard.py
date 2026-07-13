@@ -38,7 +38,7 @@ def test_base_layer_reads_the_standard_ibmmq_exporter() -> None:
     exprs = _exprs(build_dashboard("QM1", "CPB"))
     blob = " ".join(exprs)
     assert any("ibmmq_qmgr_status" in e for e in exprs)  # QM health
-    assert f'queue="{qs.send}"' in blob  # live transmit depth, not the archive
+    assert f'queue="{qs.send}"' in blob  # live transmit depth, not the audit queue
     assert f'queue="{qs.reply}"' in blob  # live reply depth
 
 

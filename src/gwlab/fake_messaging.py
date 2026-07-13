@@ -37,7 +37,7 @@ class FakeMessaging:
 
         Every put to ``source`` also stages a copy to ``target`` in the **same**
         unit of work (both commit or neither), preserving the MsgId — the
-        queue-manager-native archive, produced with no application logic.
+        queue-manager-native audit copy, produced with no application logic.
         """
         self._streams[source] = target
 

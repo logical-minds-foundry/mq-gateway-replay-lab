@@ -13,7 +13,7 @@ vrg-container-run -- vrg-validate
 ## Project purpose
 
 This repo is an **independent lab experiment** demonstrating resilient,
-replayable MQ message-gateway patterns — an MQ-native archive (a
+replayable MQ message-gateway patterns — an MQ-native audit copy (a
 two-put-under-syncpoint outbound copy + a mirrored inbound copy) with
 browse-based reconciliation and observability that proves "replay the
 unconfirmed" against a live HA/DR queue manager.
@@ -39,10 +39,12 @@ design lives in `logical-minds-foundry/.github` at
 - **Reuse none of the lab's tooling.** `mqlab` and the HA/DR `validate`
   framework stay the lab's. This repo ships its **own** small CLI (`gwlab`) and
   its own responder app.
-- **MQ-native & minimalist.** The two-put-under-syncpoint is the mechanism;
-  streaming queues are deliberately not used; AMS is out. No new vendor
-  products, no "magic" exits unless proven.
-- **The one-UOW rule.** Outbound: the archive PUT shares the transmit PUT's unit
+- **MQ-native & minimalist.** The queue-manager-native audit copy is the
+  mechanism: a streaming queue (`STREAMQ … STRMQOS(MUSTDUP)`) writes the copy
+  atomically, same MsgId, zero application logic; an explicit two-put-in-one-UOW
+  is the documented fallback where streaming is unavailable. AMS is out. No new
+  vendor products.
+- **The one-UOW rule.** Outbound: the audit PUT shares the transmit PUT's unit
   of work, with the **same MsgId** on both. Never two separate commits — a crash
   between them is silent loss.
 

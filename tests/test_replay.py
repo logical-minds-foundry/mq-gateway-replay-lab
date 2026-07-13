@@ -1,4 +1,4 @@
-"""Replay + idempotent resend — the end-to-end finale, over the streaming archive."""
+"""Replay + idempotent resend — the end-to-end finale, over the streaming audit queue."""
 
 from gwlab import inbound, outbound, reconcile
 from gwlab.config import QueueSet
@@ -12,8 +12,8 @@ QS = QueueSet.for_counterparty("CPB")
 
 def _streamed_fake() -> FakeMessaging:
     fm = FakeMessaging()
-    fm.configure_stream(QS.send, QS.send_archive)
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.send, QS.send_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     return fm
 
 

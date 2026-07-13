@@ -25,7 +25,7 @@ def _not_yet(command: str, task: str, args: argparse.Namespace) -> int:
     queues = QueueSet.for_counterparty(args.counterparty)
     print(
         f"gwlab {command}: not yet implemented (see task {task}); "
-        f"would operate on {queues.send_archive} / {queues.reply_archive}",
+        f"would operate on {queues.send_audit} / {queues.reply_audit}",
         file=sys.stderr,
     )
     return 2

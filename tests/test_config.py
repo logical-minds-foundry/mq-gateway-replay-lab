@@ -3,12 +3,12 @@
 from gwlab.config import QueueSet
 
 
-def test_for_counterparty_derives_the_four_queues() -> None:
+def test_for_counterparty_derives_audit_names() -> None:
     qs = QueueSet.for_counterparty("CPB")
     assert qs.send == "GW.CPB.SEND"
-    assert qs.send_archive == "GW.CPB.SEND.ARCHIVE"
+    assert qs.send_audit == "GW.CPB.SEND.AUDIT"
     assert qs.reply == "GW.CPB.REPLY"
-    assert qs.reply_archive == "GW.CPB.REPLY.ARCHIVE"
+    assert qs.reply_audit == "GW.CPB.REPLY.AUDIT"
 
 
 def test_counterparty_tag_flows_into_every_name() -> None:

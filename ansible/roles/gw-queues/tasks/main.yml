@@ -29,7 +29,7 @@
   changed_when: "'AMQ8005' in define_queues.stdout"
   failed_when: define_queues.rc not in [0, 10]
 
-- name: Stream each live queue to its archive via STRMQOS(MUSTDUP)
+- name: Stream each live queue to its audit queue via STRMQOS(MUSTDUP)
   ansible.builtin.shell: |
     set -o pipefail
     echo "ALTER QLOCAL({{ item.0 }}) STREAMQ({{ item.1 }}) STRMQOS(MUSTDUP)" \
@@ -43,16 +43,16 @@
   changed_when: "'AMQ8008' in gw_stream.stdout"
   failed_when: gw_stream.rc not in [0, 10]
 
-- name: Cap archive retention to a rolling day via CAPEXPRY
+- name: Cap audit-queue retention to a rolling day via CAPEXPRY
   ansible.builtin.shell: |
     set -o pipefail
-    echo "ALTER QLOCAL({{ item }}) CAPEXPRY({{ gw_archive_capexpry }})" \
+    echo "ALTER QLOCAL({{ item }}) CAPEXPRY({{ gw_audit_capexpry }})" \
       | /opt/mqm/bin/runmqsc {{ qmgr_name }}
   args:
     executable: /bin/bash
   become: true
   become_user: mqm
-  loop: "{{ gw_archives }}"
+  loop: "{{ gw_audits }}"
   register: gw_capexpry
   changed_when: "'AMQ8008' in gw_capexpry.stdout"
   failed_when: gw_capexpry.rc not in [0, 10]

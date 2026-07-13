@@ -17,7 +17,7 @@ def resend(messaging: Messaging, queues: QueueSet, items: list[Unconfirmed]) -> 
     original MsgId. Returns the count resent.
 
     Only the transmit queue is written — the message is already in the outbound
-    archive, so it is not re-archived. Reusing the original MsgId makes the
+    audit queue, so it is not re-audited. Reusing the original MsgId makes the
     resend identifiable, and the counterparty dedups on it, so a replay is
     confirmed once, never processed twice (I2). Replay is safely retriable: a
     message that stays unconfirmed is simply found and resent again on the next

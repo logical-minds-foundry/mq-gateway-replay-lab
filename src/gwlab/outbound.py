@@ -1,7 +1,7 @@
 """Outbound path.
 
 **Primary:** a single put to the transmit queue; the queue manager writes the
-atomic, MsgId-preserving archive copy via a streaming queue
+atomic, MsgId-preserving audit copy via a streaming queue
 (``STREAMQ … STRMQOS(MUSTDUP)`` configured in Ansible) — QM-native, base-licensed,
 zero application logic (research task #54).
 
@@ -22,11 +22,11 @@ if TYPE_CHECKING:
 
 def send(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> bytes:
     """Primary: single put to the transmit queue; the streaming queue produces
-    the archive copy (same MsgId, same unit of work) with no application logic.
+    the audit copy (same MsgId, same unit of work) with no application logic.
 
-    The gateway assigns the MsgId (R9). The archive is guaranteed because the
+    The gateway assigns the MsgId (R9). The audit copy is guaranteed because the
     stream is configured ``MUSTDUP``: if the copy cannot be written, the put
-    itself fails, so there is no "sent but unarchived" state (I1) — enforced by
+    itself fails, so there is no "sent but unaudited" state (I1) — enforced by
     the queue manager, not the app.
     """
     messaging.put(queues.send, Message(body=body, msg_id=msg_id))
@@ -35,12 +35,12 @@ def send(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> 
 
 
 def send_via_two_put(messaging: Messaging, queues: QueueSet, body: bytes, msg_id: bytes) -> bytes:
-    """Fallback: PUT to the transmit queue *and* the archive queue in one unit of
+    """Fallback: PUT to the transmit queue *and* the audit queue in one unit of
     work, with the same MsgId. The explicit, in-app equivalent of the streaming
-    archive, for queue managers where streaming is not configured.
+    audit copy, for queue managers where streaming is not configured.
     """
     message = Message(body=body, msg_id=msg_id)
     messaging.put(queues.send, message)
-    messaging.put(queues.send_archive, message)
+    messaging.put(queues.send_audit, message)
     messaging.commit()
     return msg_id

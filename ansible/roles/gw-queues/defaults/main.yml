@@ -4,49 +4,49 @@ counterparty: CPB
 
 # Named queues (match gwlab's QueueSet).
 q_send: "GW.{{ counterparty }}.SEND"
-q_send_archive: "GW.{{ counterparty }}.SEND.ARCHIVE"
+q_send_audit: "GW.{{ counterparty }}.SEND.AUDIT"
 q_reply: "GW.{{ counterparty }}.REPLY"
-q_reply_archive: "GW.{{ counterparty }}.REPLY.ARCHIVE"
+q_reply_audit: "GW.{{ counterparty }}.REPLY.AUDIT"
 
 # The four queues this experiment OWNS. Per the parasite / boundary rule these
 # are the ONLY MQ objects gw-queues creates; the queue manager and everything
 # else belong to the lab and are declare-and-verified, never mutated.
 #
-# The archives are produced by the QUEUE MANAGER via streaming queues
-# (STRMQOS(MUSTDUP)): every put to SEND is atomically copied to SEND.ARCHIVE, and
-# every confirmation arriving on REPLY is copied to REPLY.ARCHIVE — with no
-# application logic (the primary archive; research #54). The app-level
+# The audit copies are produced by the QUEUE MANAGER via streaming queues
+# (STRMQOS(MUSTDUP)): every put to SEND is atomically copied to SEND.AUDIT, and
+# every confirmation arriving on REPLY is copied to REPLY.AUDIT — with no
+# application logic (the primary audit copy; research #54). The app-level
 # two-put / get-copy is the fallback (gwlab.outbound / gwlab.inbound).
-# Reconciliation browses the .ARCHIVE queues only.
+# Reconciliation browses the .AUDIT queues only.
 gw_queues:
   - "{{ q_send }}"
-  - "{{ q_send_archive }}"
+  - "{{ q_send_audit }}"
   - "{{ q_reply }}"
-  - "{{ q_reply_archive }}"
+  - "{{ q_reply_audit }}"
 
-# Each live queue MUSTDUP-copies to its archive — [live_queue, archive_queue].
+# Each live queue MUSTDUP-copies to its audit queue — [live_queue, audit_queue].
 gw_streams:
-  - ["{{ q_send }}", "{{ q_send_archive }}"]
-  - ["{{ q_reply }}", "{{ q_reply_archive }}"]
+  - ["{{ q_send }}", "{{ q_send_audit }}"]
+  - ["{{ q_reply }}", "{{ q_reply_audit }}"]
 
 # Sizing for production-scale volume (capacity analysis in the epic). A day of
-# archive at high volume far exceeds the default MAXDEPTH(5000). The single
+# audit traffic at high volume far exceeds the default MAXDEPTH(5000). The single
 # queue-file limit is NOT a concern: MAXFSIZE(DEFAULT) is ~2 TB, well above a
 # day of ~200 KB messages.
 gw_max_depth: 999999999
 
-# Rolling intraday retention on the archives. The streamed copy starts
+# Rolling intraday retention on the audit queues. The streamed copy starts
 # MQEI_UNLIMITED, and CAPEXPRY caps it to 24h (864000 tenths of a second).
 # Expired copies are removed by the periodic reconcile browse (or the qm.ini
 # ExpiryInterval scanner) — which retires the start-of-day / end-of-day
 # clearing. (ExpiryInterval is a queue-manager setting we declare-and-verify,
 # never mutate — the parasite rule.)
-gw_archive_capexpry: 864000
+gw_audit_capexpry: 864000
 
-# The archive queues that carry the rolling-retention cap.
-gw_archives:
-  - "{{ q_send_archive }}"
-  - "{{ q_reply_archive }}"
+# The audit queues that carry the rolling-retention cap.
+gw_audits:
+  - "{{ q_send_audit }}"
+  - "{{ q_reply_audit }}"
 
 # qmgr_name is intentionally left unset — it must be provided at apply time (the
 # lab's running queue manager). A missing value fails loudly (see tasks), so a

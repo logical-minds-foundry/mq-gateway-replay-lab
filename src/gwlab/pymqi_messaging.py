@@ -4,7 +4,7 @@ This is the one seam that talks to a real queue manager. Everything else in
 ``gwlab`` runs against it unchanged — the whole point of the ``Messaging``
 protocol. It cannot be unit-tested in the validation container (pymqi needs the
 MQ client libraries), so it is **excluded from coverage** and verified
-end-to-end on the box (the archives are produced by the queue manager's
+end-to-end on the box (the audit queues are produced by the queue manager's
 ``STREAMQ … STRMQOS(MUSTDUP)``, so ``put`` is a single put — no app-side copy).
 
 ``pymqi`` is imported lazily so importing this module does not require the client.

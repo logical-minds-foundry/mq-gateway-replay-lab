@@ -8,7 +8,7 @@ bottom, mirror the mockup:
 2. the **base layer** — queue-manager health and the live transmit/reply queue
    depths, read from the standard IBM MQ exporter (``ibmmq_*``), the same series
    the lab's per-QM board uses;
-3. the **archive-reconciliation extension** — KPI tiles (sent, confirmed,
+3. the **audit-reconciliation extension** — KPI tiles (sent, confirmed,
    unconfirmed, mean confirm latency), the hero *unconfirmed-backlog* chart and a
    *send-vs-confirm rate* companion, the *which-trades* unconfirmed-set table, and
    the reconciliation *scan-cost* panels — read from the gwlab reconcile exporter
@@ -202,8 +202,8 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
     header = (
         f"### MQ Gateway · {counterparty} — outbound confirmations\n"
         f"**Queue manager `{qmgr}`.** Base layer: the messaging-flow board "
-        f"(QM health + live queues). Extension below: archive reconciliation — a "
-        f"browse of the outbound/inbound archives, the live path untouched."
+        f"(QM health + live queues). Extension below: audit reconciliation — a "
+        f"browse of the outbound/inbound audit queues, the live path untouched."
     )
     panels = [
         _text(1, _grid(0, 0, 24, 3), header),
@@ -223,7 +223,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             _grid(8, 3, 8, 4),
             _ibmmq("depth", qmgr, qs.send),
             ds_uid,
-            description="Depth of the live outbound queue — the hot path, not the archive.",
+            description="Depth of the live outbound queue — the hot path, not the audit queue.",
         ),
         _stat(
             4,
@@ -233,14 +233,14 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             ds_uid,
             description="Depth of the live reply queue where confirmations arrive.",
         ),
-        # --- extension: archive-reconciliation KPI tiles (gwlab exporter) ---
+        # --- extension: audit-reconciliation KPI tiles (gwlab exporter) ---
         _stat(
             5,
             "Sent today",
             _grid(0, 7, 6, 4),
             _gwlab("sent", qmgr, counterparty),
             ds_uid,
-            description="Current-day outbound archive count.",
+            description="Current-day outbound audit count.",
         ),
         _stat(
             6,
@@ -248,7 +248,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             _grid(6, 7, 6, 4),
             _gwlab("confirmed", qmgr, counterparty),
             ds_uid,
-            description="Matched on the inbound archive.",
+            description="Matched on the inbound audit queue.",
         ),
         _stat(
             7,
@@ -278,7 +278,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
                 _target("B", _gwlab("unconfirmed_aged", qmgr, counterparty), "Aged", ds_uid),
             ],
             ds_uid,
-            description="Sent minus confirmed, from archive reconciliation — the hero signal.",
+            description="Sent minus confirmed, from audit reconciliation — the hero signal.",
         ),
         _timeseries(
             10,
@@ -287,20 +287,20 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             [
                 _target(
                     "A",
-                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.send_archive),
+                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.send_audit),
                     "Sent/s",
                     ds_uid,
                 ),
                 _target(
                     "B",
-                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.reply_archive),
+                    _ibmmq_rate("mqput_mqput1_count", qmgr, qs.reply_audit),
                     "Confirmed/s",
                     ds_uid,
                 ),
             ],
             ds_uid,
             unit="reqps",
-            description="First derivative: put rate to each archive.",
+            description="First derivative: put rate to each audit queue.",
         ),
         # --- which-trades table + scan cost ---
         _table(
@@ -309,7 +309,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             _grid(0, 19, 16, 9),
             f'gwlab_unconfirmed_message{{qmgr="{qmgr}",counterparty="{counterparty}"}}',
             ds_uid,
-            "Browse of the outbound archive, entries with no matching confirmation.",
+            "Browse of the outbound audit queue, entries with no matching confirmation.",
         ),
         _timeseries(
             12,
@@ -325,7 +325,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             ],
             ds_uid,
             unit="s",
-            description="Wall-clock of the reconciliation pass — grows with the archive.",
+            description="Wall-clock of the reconciliation pass — grows with the audit queue.",
         ),
         _stat(
             13,
@@ -338,7 +338,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
     ]
     return {
         "uid": f"gw-{qmgr.lower()}-{counterparty.lower()}",
-        "title": f"MQ Gateway - {counterparty} on {qmgr} (archive reconciliation)",
+        "title": f"MQ Gateway - {counterparty} on {qmgr} (audit reconciliation)",
         "tags": ["mq-gateway", "gwlab", counterparty, qmgr],
         "timezone": "browser",
         "schemaVersion": _SCHEMA_VERSION,

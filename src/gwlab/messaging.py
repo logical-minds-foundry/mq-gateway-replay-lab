@@ -2,7 +2,7 @@
 
 The design's correctness lives in *how* it drives this interface — two puts in
 one unit of work with the same MsgId; a get-and-copy in one unit of work; a
-browse of the archives — logic that is essentially identical across MQI
+browse of the audit queues — logic that is essentially identical across MQI
 bindings. The gateway logic therefore depends on this ``Messaging`` Protocol,
 never on ``pymqi`` directly, so it stays fully testable with an in-memory fake
 and binding-agnostic (spec §2). The ``pymqi``-backed adapter is a thin layer

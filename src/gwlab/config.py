@@ -16,16 +16,16 @@ class QueueSet:
     """The four queues the gateway owns for one counterparty stream.
 
     - ``send``: the remote/transmission queue toward the counterparty.
-    - ``send_archive``: the outbound archive (the replay copy).
+    - ``send_audit``: the outbound audit (the replay copy).
     - ``reply``: the local reply queue (confirmations arrive here).
-    - ``reply_archive``: the inbound archive (the authoritative "processed"
+    - ``reply_audit``: the inbound audit (the authoritative "processed"
       ledger).
     """
 
     send: str
-    send_archive: str
+    send_audit: str
     reply: str
-    reply_archive: str
+    reply_audit: str
 
     @classmethod
     def for_counterparty(cls, counterparty: str) -> QueueSet:
@@ -33,7 +33,7 @@ class QueueSet:
         base = f"GW.{counterparty}"
         return cls(
             send=f"{base}.SEND",
-            send_archive=f"{base}.SEND.ARCHIVE",
+            send_audit=f"{base}.SEND.AUDIT",
             reply=f"{base}.REPLY",
-            reply_archive=f"{base}.REPLY.ARCHIVE",
+            reply_audit=f"{base}.REPLY.AUDIT",
         )

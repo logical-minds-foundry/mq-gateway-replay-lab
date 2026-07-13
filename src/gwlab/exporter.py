@@ -9,9 +9,9 @@ are ignored — see ``reconcile``). Three shapes are exposed:
   and mean confirm latency.
 - **Scan-cost gauges**: how many headers the reconciliation pass examined
   (``gwlab_reconcile_scanned_headers``) and how long it took
-  (``gwlab_reconcile_scan_seconds``). The archive grows monotonically through the
-  day, so these let us *chart the cost of reconciliation as it scales* and reason
-  about the full-archive worst case instead of guessing.
+  (``gwlab_reconcile_scan_seconds``). The audit queue grows monotonically
+  through the day, so these let us *chart the cost of reconciliation as it
+  scales* and reason about the full-audit-queue worst case instead of guessing.
 - A **per-message info-metric** (``gwlab_unconfirmed_message``) — one series per
   unconfirmed message, its value the age in seconds and its labels identifying
   *which* trade (MsgId), when it was sent, and its state. This powers the
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from gwlab.messaging import Messaging
 
 _GAUGE_HELP = {
-    "gwlab_sent": "Messages sent so far today (current-day outbound archive count).",
+    "gwlab_sent": "Messages sent so far today (current-day outbound audit count).",
     "gwlab_confirmed": "Messages confirmed so far today.",
     "gwlab_unconfirmed": "Messages sent today but not yet confirmed (the backlog).",
     "gwlab_unconfirmed_aged": "Unconfirmed messages older than the aged threshold.",

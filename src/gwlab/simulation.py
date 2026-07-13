@@ -14,7 +14,7 @@ The orchestration (``run_day``) is shared by two callers:
   documentation while Prometheus scrapes the board.
 
 During a *confirm* phase the counterparty replies to every request. During the
-*outage* phase it **consumes but does not confirm** — the trade is archived on the
+*outage* phase it **consumes but does not confirm** — the trade is audited on the
 outbound side with no matching inbound confirmation, which is precisely the
 unconfirmed condition the reconciliation surfaces. The outage backlog is left
 outstanding at end of day: that is the story the snapshot tells.

@@ -21,8 +21,8 @@ _TOTAL_TRADES = _OUTAGE_TRADES + _CONFIRMED_TRADES
 
 def _streamed_fake(clock: SimClock) -> FakeMessaging:
     fm = FakeMessaging(clock=clock)
-    fm.configure_stream(QS.send, QS.send_archive)
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.send, QS.send_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     return fm
 
 
@@ -67,8 +67,8 @@ def test_confirmed_trades_have_a_positive_mean_latency() -> None:
 
 def test_run_day_without_timing_hooks_drives_and_drains_both_phase_kinds() -> None:
     fm = FakeMessaging()  # no clock — exercises the no-hook path
-    fm.configure_stream(QS.send, QS.send_archive)
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.send, QS.send_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     responder = Responder(fm, QS)
     sent = run_day(
         fm,
@@ -78,6 +78,6 @@ def test_run_day_without_timing_hooks_drives_and_drains_both_phase_kinds() -> No
     )
     assert sent == 5
     assert fm.browse(QS.send) == []  # confirmed drained + outage consumed
-    # the outage copies remain on the outbound archive with no confirmation
-    assert len(fm.browse(QS.send_archive)) == 5
-    assert len(fm.browse(QS.reply_archive)) == 3
+    # the outage copies remain on the outbound audit queue with no confirmation
+    assert len(fm.browse(QS.send_audit)) == 5
+    assert len(fm.browse(QS.reply_audit)) == 3
