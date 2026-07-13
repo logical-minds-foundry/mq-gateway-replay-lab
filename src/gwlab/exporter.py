@@ -44,6 +44,9 @@ _GAUGE_HELP = {
     "gwlab_confirm_latency_seconds": "Mean time from send to confirmation, today, in seconds.",
     "gwlab_reconcile_scanned_headers": "Message headers examined by the last reconciliation scan.",
     "gwlab_reconcile_scan_seconds": "Wall-clock duration of the last reconciliation scan.",
+    "gwlab_unexpected_confirmations": (
+        "Unexpected confirmations today: replies matching no sent message, or duplicates."
+    ),
 }
 
 _MESSAGE_METRIC = "gwlab_unconfirmed_message"
@@ -51,6 +54,9 @@ _MESSAGE_HELP = (
     "Age in seconds of one unconfirmed message; labels identify which trade "
     "(msgid), when it was sent, and its state."
 )
+
+_UNEXPECTED_METRIC = "gwlab_unexpected_confirmation"
+_UNEXPECTED_HELP = "An unexpected confirmation; labels identify the reply and why."
 
 
 def render(
@@ -78,6 +84,7 @@ def render(
         ("gwlab_confirm_latency_seconds", daily.mean_latency_seconds),
         ("gwlab_reconcile_scanned_headers", daily.scanned_headers),
         ("gwlab_reconcile_scan_seconds", scan_seconds),
+        ("gwlab_unexpected_confirmations", daily.unexpected),
     )
 
     lines: list[str] = []
@@ -94,5 +101,16 @@ def render(
         age_seconds = f"{item.age.total_seconds():.0f}"
         labels = f'counterparty="{counterparty}",msgid="{msgid}",sent="{sent}",state="{item.state}"'
         lines.append(f"{_MESSAGE_METRIC}{{{labels}}} {age_seconds}")
+
+    lines.append(f"# HELP {_UNEXPECTED_METRIC} {_UNEXPECTED_HELP}")
+    lines.append(f"# TYPE {_UNEXPECTED_METRIC} gauge")
+    for anomaly in daily_report.unexpected:
+        arrived = anomaly.arrived_at.strftime("%H:%M:%S")
+        correlid = anomaly.correl_id.hex()
+        labels = (
+            f'counterparty="{counterparty}",correlid="{correlid}",'
+            f'arrived="{arrived}",reason="{anomaly.reason}"'
+        )
+        lines.append(f"{_UNEXPECTED_METRIC}{{{labels}}} 1")
 
     return "\n".join(lines) + "\n"

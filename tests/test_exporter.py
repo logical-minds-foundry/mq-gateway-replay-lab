@@ -59,6 +59,26 @@ def test_render_emits_per_message_unconfirmed_series() -> None:
     assert "gwlab_unconfirmed_message{" in out
 
 
+def test_render_exposes_unexpected_confirmations() -> None:
+    fm = FakeMessaging()
+    # one confirmed, one orphan reply (CorrelId 999 was never sent)
+    fm.put(QS.send_audit, Message(b"t", b"1", put_time=NOW - timedelta(minutes=5)))
+    fm.commit()
+    fm.put(
+        QS.reply_audit, Message(b"r", b"R:1", correl_id=b"1", put_time=NOW - timedelta(minutes=4))
+    )
+    fm.commit()
+    fm.put(
+        QS.reply_audit,
+        Message(b"r", b"R:999", correl_id=b"999", put_time=NOW - timedelta(minutes=1)),
+    )
+    fm.commit()
+    text = render(fm, QS, "CPB", NOW)
+    assert 'gwlab_unexpected_confirmations{counterparty="CPB"} 1' in text
+    assert "gwlab_unexpected_confirmation{" in text
+    assert 'reason="orphan"' in text
+
+
 def test_render_has_help_and_gauge_type_for_every_metric() -> None:
     out = render(FakeMessaging(), QS, "CPB", NOW)
     for name in (
@@ -70,6 +90,8 @@ def test_render_has_help_and_gauge_type_for_every_metric() -> None:
         "gwlab_reconcile_scanned_headers",
         "gwlab_reconcile_scan_seconds",
         "gwlab_unconfirmed_message",
+        "gwlab_unexpected_confirmations",
+        "gwlab_unexpected_confirmation",
     ):
         assert f"# HELP {name}" in out
         assert f"# TYPE {name} gauge" in out
