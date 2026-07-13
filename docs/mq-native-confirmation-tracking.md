@@ -356,28 +356,6 @@ scan time grows without limit.
 
 ---
 
-## 11. Questions for the application team
-
-The design above is complete for the common case; a few answers would confirm the edges
-and size the deployment:
-
-1. **Forwarding.** Are confirmations only recorded, or also forwarded onward to the
-   originating application? This changes the reply-path design.
-2. **Volumes.** The confirmed order of magnitude today, and the expected growth, to size
-   retention and the reconciliation interval (see §10).
-3. **Topology.** One queue manager per counterparty, or shared? This decides whether one
-   collector serves many counterparties.
-4. **Recovery objective.** The acceptable time to detect an unconfirmed message and the
-   acceptable time to recover — this is what the collector's schedule and the dashboard
-   thresholds are set to serve.
-5. **Data at rest.** A retained day of messages on the audit queues is data at rest; does
-   that pull in on-disk encryption requirements?
-6. **Availability.** Should the gateway's record inherit the messaging estate's own
-   high-availability and replication (as it does when the audit queues live on a Native
-   HA queue manager), rather than depending on a single host?
-
----
-
 *Provenance: every mechanism, invariant, and algorithm in this document was implemented
 as a working prototype and validated in a laboratory against a real IBM MQ
 distributed-queuing architecture, with the counterparty on a separate queue manager
