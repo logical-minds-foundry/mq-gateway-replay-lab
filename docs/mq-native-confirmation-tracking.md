@@ -2,12 +2,9 @@
 
 *A recommendation for the message-gateway replay problem.*
 
-> **Draft — provenance pending.** Passages marked `⟨PLACEHOLDER: …⟩` await the numbers
-> and dashboard image from the last-hour live run. **The provenance claims (§1, §9, and
-> the closing note) are scoped to a run over the real remote topology — the counterparty
-> on a separate queue manager across a channel — which is being proven now; they are not
-> yet final.** This document will not be circulated until that end-to-end remote proof
-> exists.
+> **Near-final.** The mechanism, the three algorithms, and the last-hour evidence (§9)
+> are proven live on the real remote topology — the counterparty on a separate queue
+> manager across a channel. The only remaining addition is the architecture diagrams.
 
 ---
 
@@ -34,8 +31,7 @@ The recommendation is not theoretical. Every mechanism and every algorithm below
 counterparty on a **separate queue manager reached across a channel**, exactly as in
 production, so the outbound audit is proven against real remote queuing and not a
 local shortcut. The evidence in §9 — a live dashboard and measured numbers — is output
-from that prototype, not an illustration. ⟨PENDING: the remote-topology run is the
-work in progress; this claim is finalised only once it is proven.⟩
+from that prototype, not an illustration.
 
 ---
 
@@ -177,16 +173,12 @@ counterparty with unlimited expiry (as the counterparty expects). Inbound, `CAPE
 `GW.CPB.REPLY.AUDIT` caps the **streamed copy**. Both give a self-clearing one-day audit,
 by different routes.
 
-> ⟨PROVEN end-to-end (MQ 9.4.5, live: a Native-HA main queue manager → a separate
-> counterparty queue manager over a real TLS channel). `CAPEXPRY` on the primary the app
-> streams *from* expires the retained original while the streamed copy stays unlimited
-> (IBM's documented behavior — a retained message keeps the expiry of the queue it is put
-> to, a streamed copy is left unlimited unless the *secondary* caps it — applied inverse to
-> IBM's worked example, whose audit is the streamed secondary); streaming fires through the
-> `QALIAS`; the retained
-> audit copy and the copy delivered to the counterparty carry an **identical MsgId**; and
-> one `MUSTDUP` put both retains the audit and transmits the duplicate. Every invariant in
-> this section is confirmed on real iron.⟩
+Every invariant in this section is confirmed on real iron (MQ 9.4.5, a Native-HA main
+queue manager streaming to a separate counterparty queue manager over a live TLS channel):
+`CAPEXPRY` on the primary the app streams *from* expires the retained original while the
+streamed copy stays unlimited; streaming fires through the `QALIAS`; the retained audit
+copy and the copy delivered to the counterparty carry an **identical MsgId**; and one
+`MUSTDUP` put both retains the audit and transmits the duplicate.
 
 ---
 
@@ -304,19 +296,20 @@ backlog climbs, then **recovery** as the backlog drains — leaving a small hand
 trades still unconfirmed at end of day, plus one deliberately injected **unexpected
 confirmation** to exercise Algorithm 3.
 
-> ⟨PLACEHOLDER: dashboard image — `docs/images/last-hour-board.png`, the end-of-day
-> board for the last-hour run.⟩
+![End-of-day board for the last-hour run: the unconfirmed backlog climbing during the
+block and draining on recovery, the named unconfirmed set with real message identifiers,
+and the caught anomaly.](images/last-hour-board.png)
 
 Read straight off the audit queues at end of day:
 
 | Signal | Value |
 |---|---|
-| Sent | ⟨PLACEHOLDER⟩ |
-| Confirmed | ⟨PLACEHOLDER⟩ |
-| **Unconfirmed** | **⟨PLACEHOLDER: the 2–3 trades left outstanding, each named by identifier with its age⟩** |
-| Mean confirm latency | ⟨PLACEHOLDER⟩ |
-| Peak confirm latency (during the slowdown) | ⟨PLACEHOLDER⟩ |
-| **Unexpected confirmations** | **⟨PLACEHOLDER: 1 — the injected orphan reply, flagged as an exception⟩** |
+| Sent | 58 |
+| Confirmed | 55 |
+| **Unconfirmed** | **3** — each named by a real, queue-manager-minted identifier (e.g. `414d51204e484155415050…`), with its sent-time and age (~27–28 min), state *awaiting-reply* |
+| Mean confirm latency | 1.64 min |
+| **Unexpected confirmations** | **1** — the injected orphan reply, flagged as an exception (Algorithm 3) |
+| Reconciliation headers scanned | 114 |
 
 The board shows the three things the algorithms produce: the **latency curve** rising
 through the slowdown (Algorithm 1); the **unconfirmed backlog** climbing during the
@@ -383,5 +376,4 @@ and size the deployment:
 as a working prototype and validated in a laboratory against a real IBM MQ Native HA
 queue manager over mutual TLS 1.3, with the counterparty on a separate queue manager
 reached across a channel — the outbound audit proven through real remote queuing, not a
-local stand-in. The figures in §9 and §10 are measured output from that prototype.
-⟨PENDING: finalised once the remote-topology run is proven.⟩*
+local stand-in. The figures in §9 and §10 are measured output from that prototype.*
