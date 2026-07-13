@@ -32,7 +32,7 @@ measured numbers — is output from that prototype, not an illustration.
 
 Replay is the right requirement. The difficulty is entirely in the record it depends
 on. To resend safely after a failure you must be able to state, for the current
-trading day:
+business day:
 
 - every message that was sent;
 - every confirmation that came back;
@@ -213,7 +213,7 @@ This is the core of replay: identifying, authoritatively, the messages sent with
 confirmation.
 
 1. Browse the **outbound audit** queue and collect the set of **request message
-   identifiers** for the current trading day. (Scope to today using the put date; the
+   identifiers** for the current business day. (Scope to today using the put date; the
    `CAPEXPRY` cap means the audit queues hold at most a rolling day, so this stays
    bounded.)
 2. Browse the **inbound audit** queue and collect the set of **confirmation correlation
@@ -266,7 +266,7 @@ a record that can prove the absence of such faults is stronger than one that can
 Everything above is read-only work over the two audit queues. The one piece of software
 to build is a small **collector** that, on a schedule:
 
-- browses the outbound and inbound audit queues for the current trading day;
+- browses the outbound and inbound audit queues for the current business day;
 - runs the three algorithms — response-time (Algorithm 1), the unconfirmed set
   (Algorithm 2), and the unexpected-confirmation check (Algorithm 3);
 - publishes the results: the aggregate counts and latency, the **named unconfirmed
@@ -284,16 +284,16 @@ the code is straightforward once the audit queues and the three algorithms are i
 
 ---
 
-## 9. Evidence: a last-hour trading run, live
+## 9. Evidence: a last-hour run, live
 
-To show what the collector surfaces, a realistic **last hour of a trading day** was run
+To show what the collector surfaces, a realistic **last hour of a business day** was run
 against a live queue manager, **with the counterparty on a separate queue
 manager across a channel** — the real remote topology, so the outbound audit is
 exercised through an actual transmission queue and streamed remote delivery, not a local
-stand-in. The run: a healthy open, then confirmation response times **degrading**, then a
+stand-in. The run: a healthy start, then confirmation response times **degrading**, then a
 **~10-minute stoppage** during which confirmations stop arriving and the unconfirmed
 backlog climbs, then **recovery** as the backlog drains — leaving a small handful of
-trades still unconfirmed at end of day, plus one deliberately injected **unexpected
+messages still unconfirmed at end of day, plus one deliberately injected **unexpected
 confirmation** to exercise Algorithm 3.
 
 ![End-of-day board for the last-hour run: the unconfirmed backlog climbing during the
