@@ -26,7 +26,7 @@ from typing import Any
 
 from gwlab.config import QueueSet
 
-_SCHEMA_VERSION = 39
+_SCHEMA_VERSION = 40
 
 
 def _ds(ds_uid: str) -> dict[str, str]:
@@ -191,6 +191,10 @@ _BACKLOG_THRESHOLDS: list[dict[str, Any]] = [
     {"color": "yellow", "value": 1},
     {"color": "red", "value": 100},
 ]
+_UNEXPECTED_CONFIRMATION_THRESHOLDS: list[dict[str, Any]] = [
+    {"color": "green", "value": None},
+    {"color": "red", "value": 1},
+]
 
 
 def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") -> dict[str, Any]:
@@ -237,7 +241,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         _stat(
             5,
             "Sent today",
-            _grid(0, 7, 6, 4),
+            _grid(0, 7, 5, 4),
             _gwlab("sent", qmgr, counterparty),
             ds_uid,
             description="Current-day outbound audit count.",
@@ -245,7 +249,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         _stat(
             6,
             "Confirmed today",
-            _grid(6, 7, 6, 4),
+            _grid(5, 7, 5, 4),
             _gwlab("confirmed", qmgr, counterparty),
             ds_uid,
             description="Matched on the inbound audit queue.",
@@ -253,7 +257,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         _stat(
             7,
             "Unconfirmed",
-            _grid(12, 7, 6, 4),
+            _grid(10, 7, 5, 4),
             _gwlab("unconfirmed", qmgr, counterparty),
             ds_uid,
             thresholds=_BACKLOG_THRESHOLDS,
@@ -262,15 +266,24 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         _stat(
             8,
             "Mean confirm latency",
-            _grid(18, 7, 6, 4),
+            _grid(15, 7, 5, 4),
             _gwlab("confirm_latency_seconds", qmgr, counterparty),
             ds_uid,
             unit="s",
             description="Mean time from send to confirmation, today.",
         ),
+        _stat(
+            9,
+            "Unexpected confirmations",
+            _grid(20, 7, 4, 4),
+            _gwlab("unexpected_confirmations", qmgr, counterparty),
+            ds_uid,
+            thresholds=_UNEXPECTED_CONFIRMATION_THRESHOLDS,
+            description="Confirmations with no matching sent audit entry — should never happen.",
+        ),
         # --- hero + rate ---
         _timeseries(
-            9,
+            10,
             "Unconfirmed backlog over the day",
             _grid(0, 11, 14, 8),
             [
@@ -281,7 +294,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             description="Sent minus confirmed, from audit reconciliation — the hero signal.",
         ),
         _timeseries(
-            10,
+            11,
             "Send vs confirm rate",
             _grid(14, 11, 10, 8),
             [
@@ -304,7 +317,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         ),
         # --- which-trades table + scan cost ---
         _table(
-            11,
+            12,
             "Unconfirmed set — which messages, not just how many",
             _grid(0, 19, 16, 9),
             f'gwlab_unconfirmed_message{{qmgr="{qmgr}",counterparty="{counterparty}"}}',
@@ -312,7 +325,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             "Browse of the outbound audit queue, entries with no matching confirmation.",
         ),
         _timeseries(
-            12,
+            13,
             "Reconciliation scan cost",
             _grid(16, 19, 8, 5),
             [
@@ -328,7 +341,7 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
             description="Wall-clock of the reconciliation pass — grows with the audit queue.",
         ),
         _stat(
-            13,
+            14,
             "Headers scanned",
             _grid(16, 24, 8, 4),
             _gwlab("reconcile_scanned_headers", qmgr, counterparty),

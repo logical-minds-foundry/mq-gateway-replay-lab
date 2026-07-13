@@ -52,6 +52,17 @@ def test_extension_reads_the_gwlab_reconcile_exporter() -> None:
     assert any('gwlab_sent{qmgr="QM1"' in e for e in exprs)
 
 
+def test_unexpected_confirmations_tile_is_present() -> None:
+    dashboard = build_dashboard("QM1", "CPB")
+    stats = _panel(dashboard, "stat")
+    tile = next(p for p in stats if p["title"] == "Unexpected confirmations")
+    assert tile["targets"][0]["expr"] == (
+        'max(gwlab_unexpected_confirmations{qmgr="QM1",counterparty="CPB"})'
+    )
+    steps = tile["fieldConfig"]["defaults"]["thresholds"]["steps"]
+    assert any(step["color"] == "red" and step["value"] == 1 for step in steps)
+
+
 def test_which_trades_table_is_present() -> None:
     tables = _panel(build_dashboard("QM1", "CPB"), "table")
     assert len(tables) == 1
