@@ -208,9 +208,11 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
   - **Outbound:** `CAPEXPRY(864000)` on the **primary** (`GW.CPB.REQUEST.AUDIT`) must cap the
     **retained original** to 24 h. The **streamed copy** to the counterparty gets
     `MQEI_UNLIMITED` (the secondary is the remote queue, which has no `CAPEXPRY`) — correct
-    for delivery. This is the **inverse** of what IBM documents (`CAPEXPRY` on the
-    *secondary* caps the *streamed* copy); the primary-caps-the-retained-original behavior
-    is **not documented for this direction and must be proven live**.
+    for delivery. This is IBM's **documented behavior** — a retained message keeps the
+    expiry of the queue it is put to, and a streamed copy is left unlimited unless the
+    *secondary* caps it — applied **inverse to IBM's worked example** (whose audit is the
+    streamed secondary and carries the `CAPEXPRY`). Documented, not novel; we prove it live
+    anyway.
   - **Inbound:** `CAPEXPRY(864000)` on the **secondary** (`GW.CPB.REPLY.AUDIT`) caps the
     **streamed copy** — the standard, documented behavior. Trusted, but verify.
 - **Still a single put per side.** Zero audit *logic*; the only cost is lost transparency
@@ -223,7 +225,8 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
 1. ✅ **PROVEN (MQ 9.4.5, on `SVCQM`, 2026-07-13).** `CAPEXPRY` on the outbound primary
    expires the **retained original** (scratch queue `CAPEXPRY(100)`=10 s: T0 original
    `Expiry 100`, after 20 s `No more messages`/`CURDEPTH(0)`), while the **streamed copy**
-   stays unlimited (`Expiry -1`, still present). The undocumented inversion holds.
+   stays unlimited (`Expiry -1`, still present). Documented behavior, inverse arrangement —
+   confirmed.
 2. ✅ **PROVEN (live, 2026-07-13).** **MsgId preserved end-to-end** — a scratch primary on
    `NHAUAPP` (active node `nha-ubuntu-a2`) streamed to a `QREMOTE` reusing the existing
    `XMITQ(SVCQM)` + channel `NHAUAPP.SVCQM`; the retained audit copy and the copy delivered

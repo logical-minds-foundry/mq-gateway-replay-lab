@@ -177,8 +177,11 @@ by different routes.
 
 > ⟨PROVEN end-to-end (MQ 9.4.5, live: a Native-HA main queue manager → a separate
 > counterparty queue manager over a real TLS channel). `CAPEXPRY` on the primary the app
-> streams *from* expires the retained original while the streamed copy stays unlimited (the
-> inverse of the documented behavior); streaming fires through the `QALIAS`; the retained
+> streams *from* expires the retained original while the streamed copy stays unlimited
+> (IBM's documented behavior — a retained message keeps the expiry of the queue it is put
+> to, a streamed copy is left unlimited unless the *secondary* caps it — applied inverse to
+> IBM's worked example, whose audit is the streamed secondary); streaming fires through the
+> `QALIAS`; the retained
 > audit copy and the copy delivered to the counterparty carry an **identical MsgId**; and
 > one `MUSTDUP` put both retains the audit and transmits the duplicate. Every invariant in
 > this section is confirmed on real iron.⟩
