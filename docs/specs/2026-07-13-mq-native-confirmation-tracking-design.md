@@ -219,12 +219,19 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
 - Reconciliation browses `GW.CPB.REQUEST.AUDIT` (outbound audit) and `GW.CPB.REPLY.AUDIT` (inbound
   audit).
 
-**Load-bearing live proofs (gate everything).** 1. `CAPEXPRY` on the outbound primary
-expires the retained original at 24 h (the undocumented inversion). 2. **MsgId is
-preserved end-to-end** to `SVCQM` across the real channel. 3. `MUSTDUP` retain+transmit
-is genuinely atomic over the remote link. 4. Streaming fires on a put that arrives via
-**`QALIAS` resolution** (low risk, but confirm — the alias is what makes it transparent).
-If observed behavior diverges from IBM's docs, file a doc bug and record reality.
+**Load-bearing live proofs (gate everything).**
+1. ✅ **PROVEN (MQ 9.4.5, on `SVCQM`, 2026-07-13).** `CAPEXPRY` on the outbound primary
+   expires the **retained original** (scratch queue `CAPEXPRY(100)`=10 s: T0 original
+   `Expiry 100`, after 20 s `No more messages`/`CURDEPTH(0)`), while the **streamed copy**
+   stays unlimited (`Expiry -1`, still present). The undocumented inversion holds.
+2. **MsgId preserved end-to-end** to `SVCQM` across the real channel — *pending the remote
+   leg*.
+3. `MUSTDUP` retain+transmit genuinely atomic over the remote link — *pending the remote leg*.
+4. ✅ **PROVEN (same test).** Streaming fires on a put via **`QALIAS` resolution** (put to
+   the alias → original on the primary *and* duplicate on the stream target). Transparency
+   confirmed.
+IBM's docs held for what was tested (no doc bug to file). Proofs 2–3 require the full
+remote wiring (QREMOTE → `SVCQM` over the existing channel + our queue on `SVCQM`).
 
 **Impact.** The three algorithms, the collector, the observability, and reconciliation
 are **transport-agnostic and unchanged**. What changes: (1) the outbound MQ objects
