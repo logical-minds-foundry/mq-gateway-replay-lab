@@ -8,15 +8,19 @@ from gwlab.config import QueueSet
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.messaging import Message
 from gwlab.reconcile import (
+    REASON_DUPLICATE,
+    REASON_ORPHAN,
     STATE_AGED,
     STATE_AWAITING,
     STATE_WITHIN_SLA,
     Unconfirmed,
     daily_metrics,
     metrics,
+    report,
     state_for,
     unconfirmed,
     unconfirmed_detail,
+    unexpected_detail,
 )
 
 QS = QueueSet.for_counterparty("CPB")
@@ -153,3 +157,37 @@ def test_scoping_fails_loud_on_a_message_with_no_put_time() -> None:
     _audit_sent(fm, b"nostamp")  # put_time defaults to None
     with pytest.raises(ValueError, match="no put_time"):
         daily_metrics(fm, QS, NOW)
+
+
+# --- unexpected confirmations (Algorithm 3) ---------------------------------
+
+
+def test_orphan_reply_is_flagged_unexpected() -> None:
+    fm = FakeMessaging()
+    _send_at(fm, b"1", NOW - timedelta(minutes=5))
+    _reply_at(fm, b"1", NOW - timedelta(minutes=4))  # legit confirmation
+    _reply_at(fm, b"999", NOW - timedelta(minutes=1))  # orphan: no sent MsgId 999
+    result = unexpected_detail(fm, QS, NOW)
+    assert [(u.correl_id, u.reason) for u in result] == [(b"999", REASON_ORPHAN)]
+
+
+def test_duplicate_confirmation_is_flagged_unexpected() -> None:
+    fm = FakeMessaging()
+    _send_at(fm, b"1", NOW - timedelta(minutes=5))
+    _reply_at(fm, b"1", NOW - timedelta(minutes=4))
+    _reply_at(fm, b"1", NOW - timedelta(minutes=2))  # duplicate confirmation for 1
+    result = unexpected_detail(fm, QS, NOW)
+    assert [(u.correl_id, u.reason) for u in result] == [(b"1", REASON_DUPLICATE)]
+
+
+def test_report_counts_unexpected_and_leaves_unconfirmed_intact() -> None:
+    fm = FakeMessaging()
+    _send_at(fm, b"1", NOW - timedelta(minutes=5))  # confirmed
+    _send_at(fm, b"2", NOW - timedelta(minutes=5))  # unconfirmed
+    _reply_at(fm, b"1", NOW - timedelta(minutes=4))
+    _reply_at(fm, b"777", NOW - timedelta(minutes=1))  # orphan
+    r = report(fm, QS, NOW)
+    assert r.metrics.unconfirmed == 1
+    assert r.metrics.unexpected == 1
+    assert [u.msg_id for u in r.unconfirmed] == [b"2"]
+    assert [u.reason for u in r.unexpected] == [REASON_ORPHAN]

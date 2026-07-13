@@ -49,6 +49,10 @@ STATE_WITHIN_SLA = "within-sla"
 STATE_AWAITING = "awaiting-reply"
 STATE_AGED = "aged"
 
+# Reasons an inbound reply is flagged as an unexpected confirmation (Algorithm 3).
+REASON_ORPHAN = "orphan"
+REASON_DUPLICATE = "duplicate"
+
 
 @dataclass(frozen=True)
 class Unconfirmed:
@@ -56,6 +60,21 @@ class Unconfirmed:
 
     msg_id: bytes
     body: bytes
+
+
+@dataclass(frozen=True)
+class UnexpectedConfirmation:
+    """A confirmation that should never occur.
+
+    Unlike a *missing* confirmation — a benign glitch (a message lost in
+    transit) — an unexpected confirmation is a genuine correctness fault:
+    an ``orphan`` reply whose CorrelId matches no sent MsgId, or a
+    ``duplicate`` confirmation for a MsgId already confirmed today.
+    """
+
+    correl_id: bytes
+    arrived_at: datetime
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -87,6 +106,7 @@ class DailyMetrics:
     aged: int
     mean_latency_seconds: float
     scanned_headers: int
+    unexpected: int
 
 
 @dataclass(frozen=True)
@@ -95,6 +115,7 @@ class DailyReport:
 
     metrics: DailyMetrics
     unconfirmed: list[UnconfirmedDetail]
+    unexpected: list[UnexpectedConfirmation]
 
 
 def _split(messaging: Messaging, queues: QueueSet) -> tuple[list[Unconfirmed], int]:
@@ -154,6 +175,17 @@ def report(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyReport
     replies = _on_day(messaging.browse(queues.reply_audit), day)
     reply_time_by_key = {message.correl_id: put_time for message, put_time in replies}
 
+    sent_ids = {message.msg_id for message, _ in sent}
+    seen: set[bytes] = set()
+    unexpected: list[UnexpectedConfirmation] = []
+    for message, put_time in replies:
+        correl = message.correl_id
+        if correl not in sent_ids:
+            unexpected.append(UnexpectedConfirmation(correl, put_time, REASON_ORPHAN))
+        elif correl in seen:
+            unexpected.append(UnexpectedConfirmation(correl, put_time, REASON_DUPLICATE))
+        seen.add(correl)
+
     detail = [
         UnconfirmedDetail(message.msg_id, put_time, now - put_time, state_for(now - put_time))
         for message, put_time in sent
@@ -174,8 +206,9 @@ def report(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyReport
         aged=aged,
         mean_latency_seconds=mean_latency,
         scanned_headers=len(sent) + len(replies),
+        unexpected=len(unexpected),
     )
-    return DailyReport(metrics=daily, unconfirmed=detail)
+    return DailyReport(metrics=daily, unconfirmed=detail, unexpected=unexpected)
 
 
 def unconfirmed_detail(
@@ -183,6 +216,13 @@ def unconfirmed_detail(
 ) -> list[UnconfirmedDetail]:
     """Return today's unconfirmed messages, each with sent-time, age, and state."""
     return report(messaging, queues, now).unconfirmed
+
+
+def unexpected_detail(
+    messaging: Messaging, queues: QueueSet, now: datetime
+) -> list[UnexpectedConfirmation]:
+    """Return today's unexpected confirmations (orphan / duplicate replies)."""
+    return report(messaging, queues, now).unexpected
 
 
 def daily_metrics(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyMetrics:
