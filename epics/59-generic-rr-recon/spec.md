@@ -40,6 +40,16 @@ serving as the tool's own self-contained demonstration.
 
 - **Repo:** `mq-request-reply-recon` (new; created as the epic's first
   implementation task)
+- **Visibility: public.** This is the point of the extraction — a generic,
+  broadly-useful demonstration of the MQ request-reply reconciliation pattern,
+  publishable as a portfolio/OSS artifact. It carries **zero** finance or
+  client-adjacent content by construction, so the tool's domain-agnostic
+  discipline (generic vocabulary, the order-fulfillment example, no lab
+  coupling) is not a nicety but a **load-bearing** requirement for a public
+  repo. Because the repo is public, epics *originating in it* home centrally in
+  `<org>/.github`; this epic (#59) stays homed in the private gateway lab, since
+  it is the lab's extraction effort — only the implementation PRs land in the
+  new public repo.
 - **Python package + CLI:** `rrecon`
 - **Metric prefix:** `rr_` (configurable)
 - **Per-stream label:** `stream` (replaces `counterparty`)
