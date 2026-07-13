@@ -1,15 +1,54 @@
 ---
 # Provision the gateway experiment's own queues on the lab's running queue
-# manager. This adds ONLY the experiment's GW.* queues; it declare-and-verifies
-# the queue manager and never mutates anything the lab owns (parasite rule).
+# manager (the remote object model, issue #56: QALIAS + audit QLOCALs +
+# QREMOTE, streaming to the counterparty over the lab's EXISTING inter-QM
+# link). This adds ONLY the experiment's GW.* objects; it declare-and-verifies
+# the queue manager and the link and never mutates anything the lab owns
+# (parasite rule).
+#
+# Piggyback apply: this play targets the shared lab's inventory, and — because
+# gw-queues writes MQSC via runmqsc against a live queue manager — it must run
+# against the ACTIVE Native-HA node specifically (a passive node has no running
+# qmgr to target). For now the operator passes the active host explicitly
+# (lab_qm_host); a follow-up will auto-detect the active node instead.
+#
+# qmgr_name means a different live queue manager in this play than in the
+# gw-svc-queues play below; since ansible-playbook -e is a GLOBAL override
+# (not play-scoped), apply each play as its own invocation via --limit — never
+# pass one qmgr_name for both plays in a single command.
 #
 # Apply against the live lab (see ansible/README.md):
-#   ansible-playbook -i inventory/lab.yml site.yml -e qmgr_name=<LAB_QM>
+#   ansible-playbook -i inventory/lab.yml site.yml --limit gateway_qm \
+#     -e qmgr_name=<LAB_QM> -e lab_qm_host=<ACTIVE_NODE>
 - name: Provision the gateway experiment's own queues
   hosts: gateway_qm
   gather_facts: false
   roles:
     - gw-queues
+
+# Provision the counterparty's own gateway objects on SVCQM (the their-side
+# half of the same #56 remote topology): the landing queue our request lands
+# on, and the QREMOTE that routes replies back to us. This is the only play in
+# this repo that targets a queue manager other than our own — it still obeys
+# the parasite rule: it creates ONLY its own GW.* objects on SVCQM and
+# declare-and-verifies the existing return XMITQ/channel, never touching
+# anything else on that box.
+#
+# Piggyback apply: uses the SAME lab inventory as the plays above (see
+# ansible/README.md) — SVCQM is reached over the lab's existing counterparty
+# link, not a queue manager this repo owns or provisions.
+#
+# Run as its OWN invocation (see the --limit note on the play above) — its
+# qmgr_name is SVCQM's live instance name, not our queue manager's.
+#
+# Apply against the live lab (see ansible/README.md):
+#   ansible-playbook -i inventory/lab.yml site.yml --limit gateway_svc_qm \
+#     -e qmgr_name=<SVCQM_LIVE_NAME> -e our_qmgr=<LAB_QM>
+- name: Provision the counterparty's (SVCQM) own gateway objects
+  hosts: gateway_svc_qm
+  gather_facts: false
+  roles:
+    - gw-svc-queues
 
 # Deploy the gateway's observability: the reconcile exporter (a service beside the
 # queue manager), its Prometheus file_sd target, and one board per queue manager

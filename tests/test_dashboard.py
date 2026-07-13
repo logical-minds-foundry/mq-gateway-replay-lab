@@ -38,7 +38,7 @@ def test_base_layer_reads_the_standard_ibmmq_exporter() -> None:
     exprs = _exprs(build_dashboard("QM1", "CPB"))
     blob = " ".join(exprs)
     assert any("ibmmq_qmgr_status" in e for e in exprs)  # QM health
-    assert f'queue="{qs.send}"' in blob  # live transmit depth, not the archive
+    assert f'queue="{qs.request_audit}"' in blob  # outbound audit-queue depth
     assert f'queue="{qs.reply}"' in blob  # live reply depth
 
 
@@ -50,6 +50,17 @@ def test_extension_reads_the_gwlab_reconcile_exporter() -> None:
     # gwlab series are matched on qmgr (scrape-applied) AND counterparty
     assert 'counterparty="CPB"' in blob
     assert any('gwlab_sent{qmgr="QM1"' in e for e in exprs)
+
+
+def test_unexpected_confirmations_tile_is_present() -> None:
+    dashboard = build_dashboard("QM1", "CPB")
+    stats = _panel(dashboard, "stat")
+    tile = next(p for p in stats if p["title"] == "Unexpected confirmations")
+    assert tile["targets"][0]["expr"] == (
+        'max(gwlab_unexpected_confirmations{qmgr="QM1",counterparty="CPB"})'
+    )
+    steps = tile["fieldConfig"]["defaults"]["thresholds"]["steps"]
+    assert any(step["color"] == "red" and step["value"] == 1 for step in steps)
 
 
 def test_which_trades_table_is_present() -> None:

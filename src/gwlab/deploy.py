@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 class DeployClient(Protocol):
     """The lab-facing operations board deployment needs, behind a testable seam.
 
-    - ``gateway_qmgrs``: queue managers whose archive queues Prometheus scrapes
+    - ``gateway_qmgrs``: queue managers whose audit queues Prometheus scrapes
       for this counterparty.
     - ``qm_board_folder_uid``: the Grafana folder UID of that QM's own lab board,
       or ``None`` if it has none.

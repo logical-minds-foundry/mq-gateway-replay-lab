@@ -14,10 +14,11 @@ NOW = datetime(2026, 7, 8, 16, 20, 0)  # noqa: DTZ001 — injected clock, determ
 
 def _seed(fm: FakeMessaging, *, sent: int, confirmed: int) -> None:
     for i in range(sent):
-        fm.put(QS.send_archive, Message(b"t", str(i).encode(), put_time=NOW - timedelta(minutes=1)))
+        msg = Message(b"t", str(i).encode(), put_time=NOW - timedelta(minutes=1))
+        fm.put(QS.request_audit, msg)
     for i in range(confirmed):
         reply = Message(b"r", b"R", correl_id=str(i).encode(), put_time=NOW - timedelta(seconds=30))
-        fm.put(QS.reply_archive, reply)
+        fm.put(QS.reply_audit, reply)
     fm.commit()
 
 
@@ -47,7 +48,7 @@ def test_render_emits_scan_cost_gauges() -> None:
 def test_render_emits_per_message_unconfirmed_series() -> None:
     fm = FakeMessaging()
     fm.put(
-        QS.send_archive,
+        QS.request_audit,
         Message(b"t", bytes.fromhex("9f0a17f3"), put_time=NOW - timedelta(minutes=40)),
     )
     fm.commit()
@@ -57,6 +58,26 @@ def test_render_emits_per_message_unconfirmed_series() -> None:
     assert 'sent="15:40:00"' in out
     assert 'state="aged"' in out
     assert "gwlab_unconfirmed_message{" in out
+
+
+def test_render_exposes_unexpected_confirmations() -> None:
+    fm = FakeMessaging()
+    # one confirmed, one orphan reply (CorrelId 999 was never sent)
+    fm.put(QS.request_audit, Message(b"t", b"1", put_time=NOW - timedelta(minutes=5)))
+    fm.commit()
+    fm.put(
+        QS.reply_audit, Message(b"r", b"R:1", correl_id=b"1", put_time=NOW - timedelta(minutes=4))
+    )
+    fm.commit()
+    fm.put(
+        QS.reply_audit,
+        Message(b"r", b"R:999", correl_id=b"999", put_time=NOW - timedelta(minutes=1)),
+    )
+    fm.commit()
+    text = render(fm, QS, "CPB", NOW)
+    assert 'gwlab_unexpected_confirmations{counterparty="CPB"} 1' in text
+    assert "gwlab_unexpected_confirmation{" in text
+    assert 'reason="orphan"' in text
 
 
 def test_render_has_help_and_gauge_type_for_every_metric() -> None:
@@ -70,6 +91,8 @@ def test_render_has_help_and_gauge_type_for_every_metric() -> None:
         "gwlab_reconcile_scanned_headers",
         "gwlab_reconcile_scan_seconds",
         "gwlab_unconfirmed_message",
+        "gwlab_unexpected_confirmations",
+        "gwlab_unexpected_confirmation",
     ):
         assert f"# HELP {name}" in out
         assert f"# TYPE {name} gauge" in out

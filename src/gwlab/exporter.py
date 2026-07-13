@@ -9,9 +9,9 @@ are ignored — see ``reconcile``). Three shapes are exposed:
   and mean confirm latency.
 - **Scan-cost gauges**: how many headers the reconciliation pass examined
   (``gwlab_reconcile_scanned_headers``) and how long it took
-  (``gwlab_reconcile_scan_seconds``). The archive grows monotonically through the
-  day, so these let us *chart the cost of reconciliation as it scales* and reason
-  about the full-archive worst case instead of guessing.
+  (``gwlab_reconcile_scan_seconds``). The audit queue grows monotonically
+  through the day, so these let us *chart the cost of reconciliation as it
+  scales* and reason about the full-audit-queue worst case instead of guessing.
 - A **per-message info-metric** (``gwlab_unconfirmed_message``) — one series per
   unconfirmed message, its value the age in seconds and its labels identifying
   *which* trade (MsgId), when it was sent, and its state. This powers the
@@ -37,13 +37,16 @@ if TYPE_CHECKING:
     from gwlab.messaging import Messaging
 
 _GAUGE_HELP = {
-    "gwlab_sent": "Messages sent so far today (current-day outbound archive count).",
+    "gwlab_sent": "Messages sent so far today (current-day outbound audit count).",
     "gwlab_confirmed": "Messages confirmed so far today.",
     "gwlab_unconfirmed": "Messages sent today but not yet confirmed (the backlog).",
     "gwlab_unconfirmed_aged": "Unconfirmed messages older than the aged threshold.",
     "gwlab_confirm_latency_seconds": "Mean time from send to confirmation, today, in seconds.",
     "gwlab_reconcile_scanned_headers": "Message headers examined by the last reconciliation scan.",
     "gwlab_reconcile_scan_seconds": "Wall-clock duration of the last reconciliation scan.",
+    "gwlab_unexpected_confirmations": (
+        "Unexpected confirmations today: replies matching no sent message, or duplicates."
+    ),
 }
 
 _MESSAGE_METRIC = "gwlab_unconfirmed_message"
@@ -51,6 +54,9 @@ _MESSAGE_HELP = (
     "Age in seconds of one unconfirmed message; labels identify which trade "
     "(msgid), when it was sent, and its state."
 )
+
+_UNEXPECTED_METRIC = "gwlab_unexpected_confirmation"
+_UNEXPECTED_HELP = "An unexpected confirmation; labels identify the reply and why."
 
 
 def render(
@@ -78,6 +84,7 @@ def render(
         ("gwlab_confirm_latency_seconds", daily.mean_latency_seconds),
         ("gwlab_reconcile_scanned_headers", daily.scanned_headers),
         ("gwlab_reconcile_scan_seconds", scan_seconds),
+        ("gwlab_unexpected_confirmations", daily.unexpected),
     )
 
     lines: list[str] = []
@@ -94,5 +101,16 @@ def render(
         age_seconds = f"{item.age.total_seconds():.0f}"
         labels = f'counterparty="{counterparty}",msgid="{msgid}",sent="{sent}",state="{item.state}"'
         lines.append(f"{_MESSAGE_METRIC}{{{labels}}} {age_seconds}")
+
+    lines.append(f"# HELP {_UNEXPECTED_METRIC} {_UNEXPECTED_HELP}")
+    lines.append(f"# TYPE {_UNEXPECTED_METRIC} gauge")
+    for anomaly in daily_report.unexpected:
+        arrived = anomaly.arrived_at.strftime("%H:%M:%S")
+        correlid = anomaly.correl_id.hex()
+        labels = (
+            f'counterparty="{counterparty}",correlid="{correlid}",'
+            f'arrived="{arrived}",reason="{anomaly.reason}"'
+        )
+        lines.append(f"{_UNEXPECTED_METRIC}{{{labels}}} 1")
 
     return "\n".join(lines) + "\n"

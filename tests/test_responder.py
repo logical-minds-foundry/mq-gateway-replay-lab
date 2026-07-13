@@ -9,7 +9,7 @@ QS = QueueSet.for_counterparty("CPB")
 
 
 def _seed_request(fm: FakeMessaging, msg_id: bytes) -> None:
-    fm.put(QS.send, Message(b"trade", msg_id))
+    fm.put(QS.request, Message(b"trade", msg_id))
     fm.commit()
 
 
@@ -20,7 +20,7 @@ def test_reply_correlid_equals_the_request_msgid() -> None:
     assert Responder(fm, QS).process_one() == "replied"
 
     assert [m.correl_id for m in fm.browse(QS.reply)] == [b"1"]
-    assert fm.browse(QS.send) == []  # the request was consumed
+    assert fm.browse(QS.request) == []  # the request was consumed
 
 
 def test_every_nth_reply_is_dropped() -> None:

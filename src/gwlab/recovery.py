@@ -7,8 +7,8 @@ message's age, resend those outstanding longer than ``older_than`` via ``replay`
 once, never processed twice, I2).
 
 Safely repeatable: a message that stays unconfirmed is simply resent again on the
-next pass, and the archive's ``CAPEXPRY`` (24 h) bounds how long that can go on —
-so this cannot resend forever. The caller decides the cadence and the threshold;
+next pass, and the audit queue's ``CAPEXPRY`` (24 h) bounds how long that can go
+on — so this cannot resend forever. The caller decides the cadence and the threshold;
 this is the *policy-free* mechanism.
 """
 
@@ -32,7 +32,7 @@ def resend_aged(
 
     Returns the MsgIds resent (empty if none are old enough). Selection uses the
     current-day reconciliation (which carries each message's age); the bodies come
-    from the same archive, joined by MsgId.
+    from the same audit queue, joined by MsgId.
     """
     aged = {
         item.msg_id

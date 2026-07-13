@@ -1,7 +1,7 @@
 """HTTP serving of the reconciliation exposition — the live wiring, box-only.
 
 Runs as a small service beside a queue manager: on each Prometheus scrape it
-browses the archives (via pymqi) and renders the current-day exposition. Excluded
+browses the audit queues (via pymqi) and renders the current-day exposition. Excluded
 from coverage — it needs the MQ client libraries and binds a socket, so it cannot
 run in the validation container; the exposition it serves is ``exporter.render``,
 which is unit-tested. The connection is reconnectable (the adapter sets

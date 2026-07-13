@@ -10,13 +10,13 @@ QS = QueueSet.for_counterparty("CPB")
 
 def _reply_streamed() -> FakeMessaging:
     fm = FakeMessaging()
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     return fm
 
 
-def test_receive_consumes_reply_that_was_archived_on_arrival() -> None:
+def test_receive_consumes_reply_that_was_audited_on_arrival() -> None:
     fm = _reply_streamed()
-    fm.put(QS.reply, Message(b"r", b"R:1", correl_id=b"1"))  # arrival streams to archive
+    fm.put(QS.reply, Message(b"r", b"R:1", correl_id=b"1"))  # arrival streams to audit queue
     fm.commit()
 
     got = receive(fm, QS)
@@ -24,14 +24,14 @@ def test_receive_consumes_reply_that_was_archived_on_arrival() -> None:
     assert got is not None
     assert got.correl_id == b"1"
     assert fm.browse(QS.reply) == []  # consumed
-    assert [m.correl_id for m in fm.browse(QS.reply_archive)] == [b"1"]  # archived on arrival
+    assert [m.correl_id for m in fm.browse(QS.reply_audit)] == [b"1"]  # audited on arrival
 
 
 def test_receive_returns_none_when_reply_empty() -> None:
     assert receive(FakeMessaging(), QS) is None
 
 
-def test_get_copy_fallback_moves_reply_to_archive() -> None:
+def test_get_copy_fallback_moves_reply_to_audit() -> None:
     fm = FakeMessaging()  # no stream configured
     fm.put(QS.reply, Message(b"r", b"R:1", correl_id=b"1"))
     fm.commit()
@@ -40,7 +40,7 @@ def test_get_copy_fallback_moves_reply_to_archive() -> None:
 
     assert got is not None
     assert fm.browse(QS.reply) == []
-    assert [m.correl_id for m in fm.browse(QS.reply_archive)] == [b"1"]
+    assert [m.correl_id for m in fm.browse(QS.reply_audit)] == [b"1"]
 
 
 def test_get_copy_fallback_returns_none_when_empty() -> None:

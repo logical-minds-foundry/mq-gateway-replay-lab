@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 
 class Responder:
-    """Consume requests from SEND and reply on REPLY with ``CorrelId`` = the
+    """Consume requests from REQUEST and reply on REPLY with ``CorrelId`` = the
     request's ``MsgId`` (the reconciliation key).
 
     ``drop_every`` manufactures missing confirmations: every Nth *new* request is
@@ -39,7 +39,7 @@ class Responder:
     def process_one(self) -> str | None:
         """Consume one request. Returns ``"replied"``, ``"dropped"``,
         ``"reconfirmed"``, or ``None`` when there is nothing to consume."""
-        request = self._messaging.get(self._queues.send)
+        request = self._messaging.get(self._queues.request)
         if request is None:
             return None
         if request.msg_id in self._processed:

@@ -10,7 +10,7 @@ locally, at which point the app believes it is sent) is a separate step from
 neither place — "sent, but no surviving record": the fatal third state.
 
 Contrast: the MQ-native outbound two-put (``gwlab.outbound.send``) commits the
-archive copy in the **same unit of work** as the send, so that window does not
+audit copy in the **same unit of work** as the send, so that window does not
 exist — there is no accepted-but-unrecorded state, and thus no silent loss.
 """
 

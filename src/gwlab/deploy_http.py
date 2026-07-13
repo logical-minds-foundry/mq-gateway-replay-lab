@@ -8,7 +8,7 @@ unit-tested. Run the reproducible per-QM board deploy with::
         --prometheus-url http://localhost:9090 \\
         --grafana-url http://localhost:3000 --grafana-user admin --grafana-password admin
 
-It discovers every queue manager whose ``GW.<cp>.SEND.ARCHIVE`` Prometheus is
+It discovers every queue manager whose ``GW.<cp>.REQUEST.AUDIT`` Prometheus is
 scraping, finds each QM's own lab board (``lab-qm-*``) to learn its folder, and
 upserts the gateway board into that same folder.
 """
@@ -48,8 +48,8 @@ class HttpDeployClient:
         self._auth = {"Authorization": f"Basic {token}"}
 
     def gateway_qmgrs(self, counterparty: str) -> list[str]:
-        archive = QueueSet.for_counterparty(counterparty).send_archive
-        query = urllib.parse.quote(f'ibmmq_queue_depth{{queue="{archive}"}}')
+        audit = QueueSet.for_counterparty(counterparty).request_audit
+        query = urllib.parse.quote(f'ibmmq_queue_depth{{queue="{audit}"}}')
         result = _get_json(f"{self._prom}/api/v1/query?query={query}")["data"]["result"]
         return sorted({series["metric"]["qmgr"] for series in result if "qmgr" in series["metric"]})
 

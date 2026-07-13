@@ -1,7 +1,7 @@
-"""Reconciliation: the unconfirmed set, from browsing the archives only.
+"""Reconciliation: the unconfirmed set, from browsing the audit queues only.
 
 This is the authoritative "what didn't come back" computation. It runs entirely
-against the outbound and inbound **archive** queues — never the live transmit or
+against the outbound and inbound **audit** queues — never the live transmit or
 reply queues — so it never contends with the gateway's live throughput. An
 outbound message is *unconfirmed* when its MsgId has no matching reply CorrelId
 (the counterparty echoes the request MsgId back as the reply CorrelId).
@@ -19,11 +19,12 @@ Two layers sit here:
   (``now``) is injected, never read internally, so the view is deterministic and
   testable.
 
-``report`` scans each archive exactly once. ``scanned_headers`` — the number of
-message headers examined — is deliberately first-class: it is the size of the
+``report`` scans each audit queue exactly once. ``scanned_headers`` — the number
+of message headers examined — is deliberately first-class: it is the size of the
 work, so pairing it with the wall-clock scan duration (measured by the exporter)
-is how we quantify the cost of reconciliation as the archive grows through the
-day, and reason about the full-archive worst case rather than guess at it.
+is how we quantify the cost of reconciliation as the audit queue grows through
+the day, and reason about the full-audit-queue worst case rather than guess at
+it.
 """
 
 from __future__ import annotations
@@ -48,6 +49,10 @@ STATE_WITHIN_SLA = "within-sla"
 STATE_AWAITING = "awaiting-reply"
 STATE_AGED = "aged"
 
+# Reasons an inbound reply is flagged as an unexpected confirmation (Algorithm 3).
+REASON_ORPHAN = "orphan"
+REASON_DUPLICATE = "duplicate"
+
 
 @dataclass(frozen=True)
 class Unconfirmed:
@@ -55,6 +60,21 @@ class Unconfirmed:
 
     msg_id: bytes
     body: bytes
+
+
+@dataclass(frozen=True)
+class UnexpectedConfirmation:
+    """A confirmation that should never occur.
+
+    Unlike a *missing* confirmation — a benign glitch (a message lost in
+    transit) — an unexpected confirmation is a genuine correctness fault:
+    an ``orphan`` reply whose CorrelId matches no sent MsgId, or a
+    ``duplicate`` confirmation for a MsgId already confirmed today.
+    """
+
+    correl_id: bytes
+    arrived_at: datetime
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -86,6 +106,7 @@ class DailyMetrics:
     aged: int
     mean_latency_seconds: float
     scanned_headers: int
+    unexpected: int
 
 
 @dataclass(frozen=True)
@@ -94,11 +115,12 @@ class DailyReport:
 
     metrics: DailyMetrics
     unconfirmed: list[UnconfirmedDetail]
+    unexpected: list[UnexpectedConfirmation]
 
 
 def _split(messaging: Messaging, queues: QueueSet) -> tuple[list[Unconfirmed], int]:
-    sent = messaging.browse(queues.send_archive)
-    replies = messaging.browse(queues.reply_archive)
+    sent = messaging.browse(queues.request_audit)
+    replies = messaging.browse(queues.reply_audit)
     confirmed_ids = {reply.correl_id for reply in replies}
     unmatched = [
         Unconfirmed(msg_id=message.msg_id, body=message.body)
@@ -133,13 +155,13 @@ def _on_day(messages: list[Message], day: date) -> list[tuple[Message, datetime]
     """Keep only messages stamped on ``day``, paired with their put-time.
 
     A message with no put-time cannot be dated; that is a data-integrity fault in
-    the archive feed, so we fail loudly rather than silently drop it.
+    the audit feed, so we fail loudly rather than silently drop it.
     """
     kept: list[tuple[Message, datetime]] = []
     for message in messages:
         put_time = message.put_time
         if put_time is None:
-            error = f"archived message {message.msg_id!r} has no put_time; cannot date-scope it"
+            error = f"audited message {message.msg_id!r} has no put_time; cannot date-scope it"
             raise ValueError(error)
         if put_time.date() == day:
             kept.append((message, put_time))
@@ -147,11 +169,22 @@ def _on_day(messages: list[Message], day: date) -> list[tuple[Message, datetime]
 
 
 def report(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyReport:
-    """Scan both archives once and return today's aggregates and unconfirmed set."""
+    """Scan both audit queues once and return today's aggregates and unconfirmed set."""
     day = now.date()
-    sent = _on_day(messaging.browse(queues.send_archive), day)
-    replies = _on_day(messaging.browse(queues.reply_archive), day)
+    sent = _on_day(messaging.browse(queues.request_audit), day)
+    replies = _on_day(messaging.browse(queues.reply_audit), day)
     reply_time_by_key = {message.correl_id: put_time for message, put_time in replies}
+
+    sent_ids = {message.msg_id for message, _ in sent}
+    seen: set[bytes] = set()
+    unexpected: list[UnexpectedConfirmation] = []
+    for message, put_time in replies:
+        correl = message.correl_id
+        if correl not in sent_ids:
+            unexpected.append(UnexpectedConfirmation(correl, put_time, REASON_ORPHAN))
+        elif correl in seen:
+            unexpected.append(UnexpectedConfirmation(correl, put_time, REASON_DUPLICATE))
+        seen.add(correl)
 
     detail = [
         UnconfirmedDetail(message.msg_id, put_time, now - put_time, state_for(now - put_time))
@@ -173,8 +206,9 @@ def report(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyReport
         aged=aged,
         mean_latency_seconds=mean_latency,
         scanned_headers=len(sent) + len(replies),
+        unexpected=len(unexpected),
     )
-    return DailyReport(metrics=daily, unconfirmed=detail)
+    return DailyReport(metrics=daily, unconfirmed=detail, unexpected=unexpected)
 
 
 def unconfirmed_detail(
@@ -182,6 +216,13 @@ def unconfirmed_detail(
 ) -> list[UnconfirmedDetail]:
     """Return today's unconfirmed messages, each with sent-time, age, and state."""
     return report(messaging, queues, now).unconfirmed
+
+
+def unexpected_detail(
+    messaging: Messaging, queues: QueueSet, now: datetime
+) -> list[UnexpectedConfirmation]:
+    """Return today's unexpected confirmations (orphan / duplicate replies)."""
+    return report(messaging, queues, now).unexpected
 
 
 def daily_metrics(messaging: Messaging, queues: QueueSet, now: datetime) -> DailyMetrics:

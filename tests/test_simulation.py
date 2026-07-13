@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 from gwlab import reconcile
 from gwlab.config import QueueSet
 from gwlab.fake_messaging import FakeMessaging
-from gwlab.reconcile import STATE_AGED
+from gwlab.reconcile import STATE_AGED, report
 from gwlab.responder import Responder
-from gwlab.simulation import TROUBLED_DAY, Phase, SimClock, run_day
+from gwlab.simulation import LAST_HOUR, TROUBLED_DAY, Phase, SimClock, run_day, run_last_hour
 
 QS = QueueSet.for_counterparty("CPB")
 START = datetime(2026, 7, 8, 9, 0, 0)  # noqa: DTZ001 — injected clock, deterministic
@@ -21,8 +21,8 @@ _TOTAL_TRADES = _OUTAGE_TRADES + _CONFIRMED_TRADES
 
 def _streamed_fake(clock: SimClock) -> FakeMessaging:
     fm = FakeMessaging(clock=clock)
-    fm.configure_stream(QS.send, QS.send_archive)
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.request, QS.request_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     return fm
 
 
@@ -67,8 +67,8 @@ def test_confirmed_trades_have_a_positive_mean_latency() -> None:
 
 def test_run_day_without_timing_hooks_drives_and_drains_both_phase_kinds() -> None:
     fm = FakeMessaging()  # no clock — exercises the no-hook path
-    fm.configure_stream(QS.send, QS.send_archive)
-    fm.configure_stream(QS.reply, QS.reply_archive)
+    fm.configure_stream(QS.request, QS.request_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
     responder = Responder(fm, QS)
     sent = run_day(
         fm,
@@ -77,7 +77,41 @@ def test_run_day_without_timing_hooks_drives_and_drains_both_phase_kinds() -> No
         (Phase("confirmed", 3, confirm=True), Phase("outage", 2, confirm=False)),
     )
     assert sent == 5
-    assert fm.browse(QS.send) == []  # confirmed drained + outage consumed
-    # the outage copies remain on the outbound archive with no confirmation
-    assert len(fm.browse(QS.send_archive)) == 5
-    assert len(fm.browse(QS.reply_archive)) == 3
+    assert fm.browse(QS.request) == []  # confirmed drained + outage consumed
+    # the outage copies remain on the outbound audit queue with no confirmation
+    assert len(fm.browse(QS.request_audit)) == 5
+    assert len(fm.browse(QS.reply_audit)) == 3
+
+
+def test_last_hour_leaves_a_few_unconfirmed_and_one_anomaly() -> None:
+    clock = SimClock(datetime(2026, 7, 8, 15, 30, 0))  # noqa: DTZ001
+    fm = _streamed_fake(clock)
+    responder = Responder(fm, QS)
+    run_last_hour(
+        fm,
+        QS,
+        responder,
+        after_send=lambda _p: clock.advance(timedelta(seconds=5)),
+        after_phase=lambda _p: clock.advance(timedelta(minutes=1)),
+        leave_unconfirmed=3,
+        inject_anomaly=True,
+    )
+    r = report(fm, QS, clock())
+    assert r.metrics.unconfirmed == 3
+    assert r.metrics.unexpected == 1
+
+
+def test_run_last_hour_without_timing_hooks_or_anomaly() -> None:
+    fm = FakeMessaging()  # no clock — exercises the no-hook, no-anomaly path
+    fm.configure_stream(QS.request, QS.request_audit)
+    fm.configure_stream(QS.reply, QS.reply_audit)
+    responder = Responder(fm, QS)
+    total_phase_trades = sum(phase.trades for phase in LAST_HOUR)
+    sent = run_last_hour(fm, QS, responder, leave_unconfirmed=2, inject_anomaly=False)
+    assert sent == total_phase_trades + 2
+    # the block backlog survived into recovery and was confirmed there; only
+    # the 2 tail trades are left uncollected on the live request queue
+    assert len(fm.browse(QS.request)) == 2
+    assert len(fm.browse(QS.request_audit)) == sent
+    # every phase trade got a confirmation; the tail didn't, and no anomaly was injected
+    assert len(fm.browse(QS.reply_audit)) == total_phase_trades

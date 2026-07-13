@@ -31,7 +31,7 @@ def test_two_puts_one_commit_are_atomic() -> None:
     assert len(fm.browse("ARCH")) == 1
 
 
-def test_get_and_copy_in_one_uow_consumes_and_archives() -> None:
+def test_get_and_copy_in_one_uow_consumes_and_audits() -> None:
     fm = FakeMessaging()
     fm.put("REPLY", Message(b"r", b"9"))
     fm.commit()

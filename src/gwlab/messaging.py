@@ -2,7 +2,7 @@
 
 The design's correctness lives in *how* it drives this interface — two puts in
 one unit of work with the same MsgId; a get-and-copy in one unit of work; a
-browse of the archives — logic that is essentially identical across MQI
+browse of the audit queues — logic that is essentially identical across MQI
 bindings. The gateway logic therefore depends on this ``Messaging`` Protocol,
 never on ``pymqi`` directly, so it stays fully testable with an in-memory fake
 and binding-agnostic (spec §2). The ``pymqi``-backed adapter is a thin layer
@@ -23,7 +23,10 @@ class Message:
     """A message on a queue: the body plus the MQI header fields we rely on.
 
     ``msg_id`` is the correlation key: the counterparty echoes it back as the
-    reply's ``correl_id``, which is what reconciliation matches on.
+    reply's ``correl_id``, which is what reconciliation matches on. It defaults to
+    empty, meaning **let the queue manager mint a globally-unique MsgId** on put —
+    the gateway never hand-assigns a predetermined value (that would fake global
+    uniqueness). The put reads the assigned id back onto the message.
 
     ``put_time`` is when the queue manager stamped the message (MQMD PutDate +
     PutTime). The live adapter reads it on browse; it is the basis for
@@ -33,7 +36,7 @@ class Message:
     """
 
     body: bytes
-    msg_id: bytes
+    msg_id: bytes = b""
     correl_id: bytes = b""
     put_time: datetime | None = None
 

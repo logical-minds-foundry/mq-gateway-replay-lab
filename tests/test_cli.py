@@ -28,7 +28,7 @@ def test_main_dispatches_and_reports_not_yet(
 
 def test_counterparty_flag_selects_the_queue_set(capsys: pytest.CaptureFixture[str]) -> None:
     cli.main(["--counterparty", "CPA", "start-of-day"])
-    assert "GW.CPA.SEND.ARCHIVE" in capsys.readouterr().err
+    assert "GW.CPA.REQUEST.AUDIT" in capsys.readouterr().err
 
 
 def test_missing_subcommand_is_an_error() -> None:

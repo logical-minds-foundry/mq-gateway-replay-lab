@@ -1,8 +1,8 @@
-"""Scale benchmark: reconciliation scan cost vs archive size.
+"""Scale benchmark: reconciliation scan cost vs audit-queue size.
 
-Answers #35 — what does the browse-and-diff cost as the archive fills toward a
-full trading day and beyond? Measures the reconcile.report() scan (the CPU cost of
-browsing both archives and diffing the two header sets) at increasing sizes,
+Answers #35 — what does the browse-and-diff cost as the audit queue fills toward
+a full trading day and beyond? Measures the reconcile.report() scan (the CPU cost
+of browsing both audit queues and diffing the two header sets) at increasing sizes,
 offline and deterministic, so the cost curve is reproducible. The live per-header
 cost (which adds the MQ browse round-trips) is measured separately on the box.
 
@@ -29,11 +29,11 @@ _CONFIRMED_FRACTION = 0.98  # a healthy day: most confirmed, a small unconfirmed
 def _load(n: int) -> FakeMessaging:
     fm = FakeMessaging()
     confirmed = int(n * _CONFIRMED_FRACTION)
-    # Load committed archives directly — we are timing the scan, not the puts.
-    fm._committed[_QS.send_archive] = [  # noqa: SLF001 — benchmark harness
+    # Load committed audit queues directly — we are timing the scan, not the puts.
+    fm._committed[_QS.request_audit] = [  # noqa: SLF001 — benchmark harness
         Message(b"trade", i.to_bytes(24, "big"), put_time=_DAY) for i in range(n)
     ]
-    fm._committed[_QS.reply_archive] = [  # noqa: SLF001
+    fm._committed[_QS.reply_audit] = [  # noqa: SLF001
         Message(
             b"ack", b"R" + i.to_bytes(23, "big"), correl_id=i.to_bytes(24, "big"), put_time=_DAY
         )
@@ -43,7 +43,7 @@ def _load(n: int) -> FakeMessaging:
 
 
 def main() -> None:
-    print(f"{'archive':>10} {'headers':>10} {'unconfirmed':>12} {'scan (ms)':>10} {'M hdr/s':>9}")
+    print(f"{'audit':>10} {'headers':>10} {'unconfirmed':>12} {'scan (ms)':>10} {'M hdr/s':>9}")
     for n in _SIZES:
         fm = _load(n)
         start = time.perf_counter()
