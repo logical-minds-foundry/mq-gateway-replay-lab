@@ -26,7 +26,7 @@ from typing import Any
 
 from gwlab.config import QueueSet
 
-_SCHEMA_VERSION = 40
+_SCHEMA_VERSION = 41
 
 
 def _ds(ds_uid: str) -> dict[str, str]:
@@ -223,11 +223,14 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         ),
         _stat(
             3,
-            f"Transmit → {counterparty} (live depth)",
+            f"Outbound → {counterparty} (audit depth)",
             _grid(8, 3, 8, 4),
-            _ibmmq("depth", qmgr, qs.request),
+            _ibmmq("depth", qmgr, qs.request_audit),
             ds_uid,
-            description="Depth of the live outbound queue — the hot path, not the audit queue.",
+            description=(
+                "Depth of the outbound audit queue (the app's transparent put target); "
+                "the duplicate is streamed onward to the counterparty."
+            ),
         ),
         _stat(
             4,
@@ -356,6 +359,6 @@ def build_dashboard(qmgr: str, counterparty: str, ds_uid: str = "prometheus") ->
         "timezone": "browser",
         "schemaVersion": _SCHEMA_VERSION,
         "refresh": "10s",
-        "time": {"from": "now-12h", "to": "now"},
+        "time": {"from": "now-30m", "to": "now"},
         "panels": panels,
     }
