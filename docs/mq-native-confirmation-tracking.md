@@ -160,10 +160,19 @@ Three invariants make the record trustworthy, and the collector below depends on
 
 `MAXDEPTH` is set high because a full day of audit traffic far exceeds the default; the
 single queue-file limit is not a concern (its default ceiling is roughly two terabytes,
-far above a day's volume). `CAPEXPRY` bounds retention to one rolling trading day, so
-the audit queues never grow without limit. Reconciliation (below) browses the **outbound
-audit** — the retained originals on `GW.CPB.SEND` — and the **inbound audit**,
-`GW.CPB.REPLY.AUDIT`.
+far above a day's volume). Reconciliation (below) browses the **outbound audit** — the
+retained originals on `GW.CPB.SEND` — and the **inbound audit**, `GW.CPB.REPLY.AUDIT`.
+
+On retention, note the deliberate asymmetry. Outbound, `CAPEXPRY` on `GW.CPB.SEND` caps
+the **retained original** to a rolling day, while the duplicate is transmitted to the
+counterparty with unlimited expiry (as the counterparty expects). Inbound, `CAPEXPRY` on
+`GW.CPB.REPLY.AUDIT` caps the **streamed copy**. Both give a self-clearing one-day audit,
+by different routes.
+
+> ⟨UNDER PROOF: the outbound case relies on `CAPEXPRY` capping the *retained original* on
+> the queue streamed *from* — the inverse of the documented behavior (which caps the
+> streamed copy via the secondary queue). This is being validated on the live remote link
+> before this section is final.⟩
 
 ---
 

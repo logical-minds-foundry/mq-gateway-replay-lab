@@ -191,26 +191,46 @@ before the write-up is circulated (docs are a guide; truth is proven on real iro
 
 **Corrected mechanism.**
 
-- **Outbound.** The gateway puts to a **local** queue (`GW.CPB.SEND`) whose `STREAMQ`
-  target is a **remote-queue definition** (`GW.CPB.SEND.TO.CPB` → counterparty QM via an
-  XMITQ + sender channel). The queue manager **retains the original on `GW.CPB.SEND`**
-  (this is the outbound audit) and **transmits the duplicate** to the counterparty, in
-  one unit of work, `STRMQOS(MUSTDUP)`. `CAPEXPRY` on `GW.CPB.SEND` gives rolling-day
-  retention. Must-duplicate guarantees the duplicate reaches the **XMITQ** (not that the
-  channel has delivered) — correct, since an untransmitted message is rightly unconfirmed.
-- **Inbound.** Unchanged and already correct: confirmations arrive across a return
-  channel onto local `GW.CPB.REPLY`, streamed to local `GW.CPB.REPLY.AUDIT`.
-- **Asymmetry (inherent).** Outbound audit = the retained **original** on the put queue;
-  inbound audit = the retained **duplicate**. This is forced by the restriction (you
-  cannot stream an XMITQ/QREMOTE, so the retained copy must be the source). Reconciliation
-  browses `GW.CPB.SEND` (outbound) and `GW.CPB.REPLY.AUDIT` (inbound).
+- **Outbound.** The app puts to a **local** queue (`GW.CPB.SEND`) that **is the outbound
+  audit** — the retained original. Its `STREAMQ` target is a **remote-queue definition**
+  (`GW.CPB.SEND.TO.SVC` → the counterparty QM `SVCQM`, over the lab's *existing* XMITQ +
+  sender channel). One put, `STRMQOS(MUSTDUP)`: the queue manager retains the original
+  locally and transmits the **duplicate** to the counterparty. Must-duplicate guarantees
+  the duplicate reaches the **XMITQ** (not that the channel has delivered) — correct,
+  since an untransmitted message is rightly unconfirmed.
+- **Inbound.** Confirmations arrive across the return channel onto the **application**
+  reply queue `GW.CPB.REPLY` (drained by the gateway), which streams a **duplicate** to
+  the local **audit** `GW.CPB.REPLY.AUDIT`.
+- **The `CAPEXPRY` asymmetry (the crux).** Retention runs through two *different*
+  behaviors:
+  - **Outbound:** `CAPEXPRY(864000)` on the **primary** (`GW.CPB.SEND`) must cap the
+    **retained original** to 24 h. The **streamed copy** to the counterparty gets
+    `MQEI_UNLIMITED` (the secondary is the remote queue, which has no `CAPEXPRY`) — correct
+    for delivery. This is the **inverse** of what IBM documents (`CAPEXPRY` on the
+    *secondary* caps the *streamed* copy); the primary-caps-the-retained-original behavior
+    is **not documented for this direction and must be proven live**.
+  - **Inbound:** `CAPEXPRY(864000)` on the **secondary** (`GW.CPB.REPLY.AUDIT`) caps the
+    **streamed copy** — the standard, documented behavior. Trusted, but verify.
+- **Still a single put per side.** Zero audit *logic*; the only cost is lost transparency
+  (the app knowingly puts to the audit-named queue). Cheaper than the two-put alternative,
+  which is why the streaming pattern (A) is chosen over two-put-under-syncpoint (B).
+- Reconciliation browses `GW.CPB.SEND` (outbound audit) and `GW.CPB.REPLY.AUDIT` (inbound
+  audit).
+
+**Load-bearing live proofs (gate everything).** 1. `CAPEXPRY` on the outbound primary
+expires the retained original at 24 h (the undocumented inversion). 2. **MsgId is
+preserved end-to-end** to `SVCQM` across the real channel. 3. `MUSTDUP` retain+transmit
+is genuinely atomic over the remote link. If observed behavior diverges from IBM's docs,
+file a doc bug and record reality.
 
 **Impact.** The three algorithms, the collector, the observability, and reconciliation
 are **transport-agnostic and unchanged**. What changes: (1) the outbound MQ objects
-(a QREMOTE stream target, an XMITQ, a sender channel, and the outbound audit being the
-put queue itself); (2) the lab must stand up a **real counterparty queue manager** with a
-channel pair and prove the end-to-end remote path; (3) `QueueSet`/reconcile/simulation
-change so the outbound audit is the send queue and the stream target is remote — the code
-that currently streams `send → send_audit` locally is the local shortcut being replaced.
+(a QREMOTE stream target reusing the existing XMITQ/sender channel to `SVCQM`; the
+outbound audit being the put queue itself); (2) we **reuse the lab's existing counterparty
+QM `SVCQM` and inter-QM channels** — we add only our own `GW.CPB.*` queues to `NHAUAPP`
+and `SVCQM` and run our responder on the `SVCQM` side (no new QMs/channels, parasite rule
+intact); (3) `QueueSet`/reconcile/simulation change so the outbound audit is the put
+queue and the stream target is remote — the code that currently streams `send →
+send_audit` locally is the local shortcut being replaced.
 
 This correction **blocks** the last-hour live run and the finalisation of the document.
