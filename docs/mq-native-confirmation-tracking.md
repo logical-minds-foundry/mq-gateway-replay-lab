@@ -153,11 +153,17 @@ Three invariants make the record trustworthy, and the collector below depends on
    yet delivered it — which is correct: the audit records the send, and a message still
    awaiting transmission is, rightly, counted as unconfirmed.
 
-`MAXDEPTH` is set high because a full day of audit traffic far exceeds the default; the
-single queue-file limit is not a concern (its default ceiling is roughly two terabytes,
-far above a day's volume). Reconciliation (below) browses the **outbound audit** — the
-retained originals on `GW.CPB.REQUEST.AUDIT` — and the **inbound audit**,
-`GW.CPB.REPLY.AUDIT`.
+Two quantities must be sized to the actual load, not assumed. **Queue depth** —
+`MAXDEPTH` on each audit queue must be set well above a full day's message count (the most
+messages expected within the 24-hour `CAPEXPRY` retention window), because the default
+depth is far too low to hold a day of audit traffic. **Disk** — each audited message
+occupies real storage for up to a day, so the queue file must have room for a full day's
+volume. A single queue file can grow to roughly two terabytes, so the effective ceiling
+is normally the file system, not MQ; the check is simple arithmetic — a day's peak message
+count times the average message size must fit the available disk with margin. For modest
+volumes neither limit is a concern, but both should be confirmed rather than taken on
+faith. Reconciliation (below) browses the **outbound audit** — the retained originals on
+`GW.CPB.REQUEST.AUDIT` — and the **inbound audit**, `GW.CPB.REPLY.AUDIT`.
 
 On retention, note the deliberate asymmetry. Outbound, `CAPEXPRY` on
 `GW.CPB.REQUEST.AUDIT` caps the **retained original** to a rolling day, while the
