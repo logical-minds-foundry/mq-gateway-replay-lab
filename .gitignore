@@ -27,3 +27,13 @@ __pycache__/
 .coverage
 .coverage.*
 htmlcov/
+
+# Test/coverage/report artifacts. The tool caches (.pytest_cache, .mypy_cache,
+# .ruff_cache, .venv) self-ignore via a tool-written .gitignore inside each dir;
+# these report files do NOT, so vrg-validate leaks them to the repo root.
+coverage.xml
+coverage.json
+junit.xml
+licenses.json
+pip-audit.json
+.ty_cache/
