@@ -178,6 +178,11 @@ class FieldTree:
 
 def tokenize(text: str) -> FieldTree: ...   # raises TokenizeError on unparseable structure
 class TokenizeError(ValueError): ...
+
+# Envelope parsing (Issue [1]): read the MT number from Block 2 and return the
+# block-4 payload to hand to tokenize(). The MT type is NOT in block 4, so this is
+# the single owner of "which MT is this".
+def parse_envelope(text: str) -> tuple[str, str]: ...   # -> (mt, block4_text); raises TokenizeError
 ```
 
 - [ ] **Step 1: Failing test — a minimal GENL block with SEME.**
@@ -194,6 +199,7 @@ def test_parses_genl_block_with_seme():
 ```
 - [ ] **Step 2: Run — expect FAIL** (`tokenize` undefined). `vrg-container-run -- vrg-validate`
 - [ ] **Step 3: Implement the tokenizer.** Line-scan the block-4 text: `:16R:<name>` opens a block, `:16S:<name>` closes it (nesting via a stack); `:NN[a]:` starts a field; a `//` after a `:4!c` qualifier splits qualifier from value; lines without a leading tag continue the previous field's value. Unbalanced `:16R:`/`:16S:` raises `TokenizeError`.
+- [ ] **Step 3b: Add `parse_envelope`.** Recognize the SWIFT block framing `{1:…}{2:…}{4:…-}`; read the **MT number from Block 2** (`{2:O548…}` / `{2:I541…}`) and return `(mt, block4_text)`. Malformed framing raises `TokenizeError`. Test: `parse_envelope("{1:F01BANKBEBB…}{2:O5480900…}{4:\n:16R:GENL\n…\n-}")[0] == "548"`.
 - [ ] **Step 4: Add tests — nested blocks, multi-line value, qualifier-less field, unbalanced-block error.**
 ```python
 def test_nested_link_block_inside_genl():
@@ -251,7 +257,7 @@ def test_seme_rejects_out_of_charset_value():
 **Files:** Create `src/gwlab/swift/model.py`; Test `tests/swift/test_model.py`
 
 **Interfaces:**
-- Consumes: `tokenizer.FieldTree` (Task 2), `Message.put_time` (`gwlab.messaging`).
+- Consumes: `tokenizer.parse_envelope` + `tokenizer.tokenize` (Task 2), `Message.put_time` (`gwlab.messaging`).
 - Produces:
 ```python
 @dataclass(frozen=True)
@@ -270,6 +276,9 @@ class SwiftMessage:
     is_instruction: bool       # mt in {540,541,542,543}
     is_confirmation: bool      # mt in {544,545,546,547}
 
+# Full-message entry point: envelope → mt + block4 → field tree → SwiftMessage.
+def parse_swift(text: str, put_time: datetime) -> SwiftMessage: ...
+# Lower-level (mt already known), used by parse_swift and by tests:
 def parse_message(mt: str, tree: FieldTree, put_time: datetime) -> SwiftMessage: ...
 ```
 - [ ] **Step 1: Failing test — parse a 548 carrying two statuses.**
@@ -286,8 +295,8 @@ def test_parse_548_extracts_multiple_statuses():
     assert {(s.qualifier,s.value) for s in msg.statuses} == {("IPRC","PACK"),("MTCH","MACH")}
 ```
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement `parse_message`.** Extract `SEME`/`RELA` via `tree.find`; collect every `:25D:` as a `StatusItem`, pairing a same-STAT-block `:24B:` reason; set `is_instruction`/`is_confirmation` from `mt`. The `mt` is supplied by the caller (from the message type / a `:20D:` or the queue of origin) — this task does not sniff it.
-- [ ] **Step 4: Add tests — an instruction (541) has `rela is None`, `statuses == ()`, `is_instruction is True`; a 545 confirmation has `is_confirmation is True`.**
+- [ ] **Step 3: Implement `parse_message` then `parse_swift`.** `parse_message`: extract `SEME`/`RELA` via `tree.find`; collect every `:25D:` as a `StatusItem`, pairing a same-STAT-block `:24B:` reason; set `is_instruction`/`is_confirmation` from `mt`. `parse_swift(text, put_time)`: call `parse_envelope` (Task 2) to get `(mt, block4)`, `tokenize(block4)`, then `parse_message`. The MT is now determined here (via the envelope), not supplied by callers.
+- [ ] **Step 4: Add tests — `parse_swift` on a full `{1:}{2:}{4:}` 541 yields `mt=="541"`, `rela is None`, `statuses == ()`, `is_instruction is True`; a full 545 yields `is_confirmation is True`.**
 - [ ] **Step 5: Run — expect PASS. Commit.** `vrg-commit --type feat --scope swift --message "parsed SwiftMessage model"`
 
 ### Task 5: Correlation (SEME/RELA grouping + orphans)
@@ -326,6 +335,7 @@ def correlate(instructions: list[SwiftMessage],
 - [ ] **Step 1: Failing test — one instruction, two responses, one orphan.**
 - [ ] **Step 2: Run — expect FAIL.**
 - [ ] **Step 3: Implement `correlate`.** Index instructions by `seme`; bucket responses by `rela`; a response whose `rela` matches no instruction `seme` becomes an `Orphan`; sort each bucket by `put_time`.
+- [ ] **Step 3b (conditional, gated on Task 1 — Issue [3]): `:20C::PREV//` chains.** If the reference spike finds that `:20C::PREV//` participates in the tracked lifecycle (amendment/cancellation linking to a prior instruction's `SEME`), extend `correlate` to follow the previous-reference chain so an amendment attaches to its originating instruction. If the spike finds `PREV` does **not** apply, record that in a one-line note here and skip — no code. Do not implement speculatively before Task 1's finding.
 - [ ] **Step 4: Add tests — put-time ordering is stable; an instruction with no responses yields `responses == []`; a response with `rela is None` is an orphan (`reason="orphan"`).**
 - [ ] **Step 5: Run — expect PASS. Commit.** `vrg-commit --type feat --scope swift --message "SEME/RELA correlation + orphan detection"`
 
@@ -418,18 +428,23 @@ def is_aged_out(state: InstructionState, now: datetime, horizon: Horizon) -> boo
     # non-terminal AND instruction older than horizon
 # collect.py
 @dataclass(frozen=True)
+class Anomaly:
+    kind: str          # "malformed" | "field-violation" | "orphan" | "transition"
+    reference: str     # SEME/RELA/offending value — always populated for triage
+    detail: str        # human-readable (the TokenizeError msg, the FieldViolation, etc.)
+@dataclass(frozen=True)
 class DayReport:
     states: list[InstructionState]
-    orphans: list[Orphan]
     aged_out: list[InstructionState]
+    anomalies: list[Anomaly]         # UNIFIED channel: malformed + field-violation + orphan + transition
     scanned: int                     # messages browsed (scan-cost thread, spec §11)
 def collect(messaging: Messaging, queues: SwiftQueueSet,
             now: datetime, horizon: Horizon) -> DayReport: ...
 ```
-- [ ] **Step 1: Failing test — collect over a `FakeMessaging` seeded with one clean-settle flow and one late (T+2) confirmation, asserting the late confirmation still folds (not an orphan).**
+- [ ] **Step 1: Failing test — collect over a `FakeMessaging` seeded with one clean-settle flow and one late (T+2) confirmation, asserting the late confirmation still folds (not an anomaly).**
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement `window.py` then `collect.py`.** `collect` browses `instruct_audit` and `status_audit`, parses each body (Tasks 2/4), filters to the settlement window via `in_window`, correlates (Task 5), folds each (Task 6), computes `aged_out`, and counts `scanned`. Read-only: no puts.
-- [ ] **Step 4: Add tests — an instruction with no terminal state past the horizon lands in `aged_out`, not `orphans`; `scanned` equals the number of in-window messages browsed; a pre-window instruction is excluded.**
+- [ ] **Step 3: Implement `window.py` then `collect.py`.** `collect` browses `instruct_audit` and `status_audit`. It is the **graceful-degradation boundary** (spec §12): each body is parsed inside a try/except — a `TokenizeError` becomes a `malformed` `Anomaly`, a non-empty `validate_tree` (Task 3) becomes a `field-violation` `Anomaly` — and the run **continues** past the bad message. Valid messages are filtered to the settlement window via `in_window`, correlated (Task 5, whose `Orphan`s become `orphan` anomalies), folded (Task 6, whose `TransitionAnomaly`s become `transition` anomalies), and `aged_out` computed. All four anomaly kinds land in the one `anomalies` list; `scanned` counts every message browsed. Read-only: no puts.
+- [ ] **Step 4: Add tests — (a) an instruction with no terminal state past the horizon lands in `aged_out`, not `anomalies`; (b) `scanned` equals the messages browsed; (c) a pre-window instruction is excluded; (d) *graceful degradation:* a batch with one un-tokenizable message and one field-violating message yields exactly two anomalies (`malformed`, `field-violation`) AND still reports every valid instruction — one bad message never aborts the run.**
 - [ ] **Step 5: Run — expect PASS. Commit.** `vrg-commit --type feat --scope swift --message "settlement-window scoping + read-only collector"`
 
 ### Task 8: Observability metrics
@@ -452,14 +467,15 @@ class Metrics:
     aging: list[InstructionState]           # in-flight, sorted by age
     rejected: list[InstructionState]
     failed: list[InstructionState]
-    anomalies: int                          # orphans + transition anomalies
+    anomalies: int                          # total across all kinds
+    anomalies_by_kind: dict[str, int]       # malformed / field-violation / orphan / transition
     scanned: int
 def metrics(report: DayReport, now: datetime) -> Metrics: ...
 ```
 - [ ] **Step 1: Failing test — distribution counts each state; latencies computed from hop timestamps.**
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement `metrics`.** Tally `distribution`; for each adjacent hop pair across all instructions compute mean/p95 from timestamp deltas; collect `aging` (non-terminal, sorted by `now - instructed_at`), `rejected`, `failed`; sum `anomalies`; pass through `scanned`.
-- [ ] **Step 4: Add tests — attention sets contain the right SEMEs; anomalies include both orphans and transition anomalies; empty report yields zeroed metrics (no divide-by-zero).**
+- [ ] **Step 3: Implement `metrics`.** Tally `distribution`; for each adjacent hop pair across all instructions compute mean/p95 from timestamp deltas; collect `aging` (non-terminal, sorted by `now - instructed_at`), `rejected`, `failed`; count `report.anomalies` into `anomalies_by_kind` and `anomalies` (the total); pass through `scanned`.
+- [ ] **Step 4: Add tests — attention sets contain the right SEMEs; `anomalies_by_kind` tallies all four kinds and `anomalies` is their sum; empty report yields zeroed metrics (no divide-by-zero).**
 - [ ] **Step 5: Run — expect PASS. Commit.** `vrg-commit --type feat --scope swift --message "settlement observability metrics"`
 
 ---
@@ -481,21 +497,24 @@ class Flow:
     response_texts: list[str] # ordered MT548 / MT544-547 bodies
     expected_terminal: State | None   # None for in-flight/aging flows
 def all_flows() -> list[Flow]: ...            # one per documented reachable path + anomaly cases
-def render_instruction(mt: str, seme: str, **econ) -> str: ...  # format-valid MT text
-def render_status(rela: str, statuses: list[tuple[str,str]]) -> str: ...
-def render_confirmation(mt: str, rela: str) -> str: ...
+# Renderers emit FULL {1:}{2:}{4:} messages (Issue [1]) so parse_swift can read the MT.
+def render_instruction(mt: str, seme: str, **econ) -> str: ...
+def render_status(rela: str, statuses: list[tuple[str,str]]) -> str: ...   # an MT548
+def render_confirmation(mt: str, rela: str) -> str: ...                    # an MT544-547
 ```
-- [ ] **Step 1: Failing test — every generated message is format-valid against the catalog.**
+- [ ] **Step 1: Failing test — every generated message parses to the right MT and is format-valid against the catalog.**
 ```python
 def test_all_corpus_messages_are_format_valid():
-    from gwlab.swift.tokenizer import tokenize
+    from gwlab.swift.tokenizer import parse_envelope, tokenize
     from gwlab.swift.fields import validate_tree
     for flow in all_flows():
         for text in [flow.instruction_text, *flow.response_texts]:
-            assert validate_tree(tokenize(text)) == []
+            mt, block4 = parse_envelope(text)          # MT readable from Block 2
+            assert mt.isdigit()
+            assert validate_tree(tokenize(block4)) == []   # block-4 fields all catalog-valid
 ```
 - [ ] **Step 2: Run — expect FAIL.**
-- [ ] **Step 3: Implement the renderers and `all_flows`.** Renderers emit block-4 text whose every field satisfies `FIELD_CATALOG` (correct qualifiers, char-sets, lengths) using realistic exemplars (ISINs, quantities, dates, references). `all_flows` enumerates one flow per **reachable** path in `REACHABILITY` (clean-settle, rejected-at-validation, matched-then-failing, acknowledged-and-aging) plus anomaly fixtures (orphan RELA, malformed field, undocumented qualifier).
+- [ ] **Step 3: Implement the renderers and `all_flows`.** Renderers emit **full `{1:}{2:}{4:}` messages** — a Block 2 carrying the correct MT and a Block 4 whose every field satisfies `FIELD_CATALOG` (correct qualifiers, char-sets, lengths) using realistic exemplars (ISINs, quantities, dates, references). `all_flows` enumerates one flow per **reachable** path in `REACHABILITY` (clean-settle, rejected-at-validation, matched-then-failing, acknowledged-and-aging) plus anomaly fixtures (orphan RELA, malformed field, undocumented qualifier).
 - [ ] **Step 4: Add tests — folding each non-anomaly flow reproduces its `expected_terminal`; the anomaly flows produce the intended anomaly (orphan/transition/violation); every reachable path in `REACHABILITY` has at least one flow.**
 - [ ] **Step 5: Run — expect PASS. Commit.** `vrg-commit --type feat --scope swift --message "format-valid lifecycle-path corpus"`
 
@@ -534,7 +553,7 @@ def respond(messaging, queues, instruction: SwiftMessage, plan: Plan, clock) -> 
 
 **Files:** Create `src/gwlab/swift/dashboard.py`; Test `tests/swift/test_dashboard.py`
 
-**Interfaces:** Consumes `Metrics` (Task 8). Produces `def render_board(metrics: Metrics, now: datetime) -> str` (self-contained HTML/artifact) with: the **state-distribution funnel** (hero), the **lifecycle-latency** panel, the **attention tables** (aging / rejected / failed, each by SEME + age), the **anomaly** count, and the **scan-cost** line.
+**Interfaces:** Consumes `Metrics` (Task 8). Produces `def render_board(metrics: Metrics, now: datetime) -> str` (self-contained HTML/artifact) with: the **state-distribution funnel** (hero), the **lifecycle-latency** panel, the **attention tables** (aging / rejected / failed, each by SEME + age), the **anomaly** panel broken out by kind (`anomalies_by_kind`: malformed / field-violation / orphan / transition), and the **scan-cost** line.
 - [ ] **Step 1: Failing test — `render_board` output contains each state label, each attention section, and the scanned-count.** (String/DOM-contains assertions, mirroring v1's `test_dashboard.py` style.)
 - [ ] **Step 2–4: Run/Implement/expand.** **Step 5: PASS + commit.** `vrg-commit --type feat --scope swift --message "state-machine settlement dashboard"`
 
@@ -570,7 +589,7 @@ Two GitHub issues: a **deployment** task (stand up the objects + board/exporter)
 **Spec coverage** — every spec section maps to a task:
 - §2 boundaries → Global Constraints + Tasks 1 (documented-to-the-letter), 5 (viewpoint via corpus/config), 7 (window).
 - §3 message family → Tasks 4, 9. §4 state machine + fold → Tasks 1, 6. §4.4 window → Task 7. §5 correlation → Task 5. §6 architecture → file structure + all tasks. §7 MQ objects/coexistence → Task 15 (+ port note in Task 13). §8 data flow → Task 7. §9 catalog → Tasks 1, 3. §10 corpus → Task 9. §11 observability → Tasks 8, 12. §12/§13 anomalies/no-silent-failures → Tasks 3, 6, 8 (surfaced), never swallowed. §13 testing → every task is TDD + Task 11 e2e + Task 15 live. §14 deliverable → Task 14. §15 out-of-scope → honored (no putter; no ISO 20022 parser; no economic matching). §16 research → Task 1. §18 success criteria → Tasks 14/15.
-- **Gap check:** none open. The `mt`-detection detail (how each audited body's message type is known) is assigned explicitly in Task 7's Consumes note (direction by queue of origin; type from the body indicator parsed in Task 4).
+- **Gap check (post-alignment):** three gaps found and closed. (1) **MT-type extraction** now has an owner — `parse_envelope` in Task 2 reads the MT from Block 2, and Task 4's `parse_swift` consumes it (no caller-supplied `mt`). (2) **Anomaly surfacing / graceful degradation** — Task 7's collector is the guard boundary: tokenize failures and field violations are caught, unified into `DayReport.anomalies` (kinds malformed/field-violation/orphan/transition), counted in Task 8 (`anomalies_by_kind`) and shown in Task 12; one bad message never aborts the run. (3) **`:20C::PREV//` chains** — a conditional Task 5 step gated on the Task 1 spike's finding.
 
 **Placeholder scan** — no "TBD/handle-appropriately"; every code step shows real test + implementation shape; peripheral tasks (10–13) compress the run/implement steps but state concrete interfaces and the first failing test.
 

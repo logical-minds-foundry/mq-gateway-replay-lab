@@ -249,7 +249,8 @@ tokenizer + tables/catalogs).
 
 ```
 gwlab/swift/
-  tokenizer.py     generic ISO 15022 block-4 parser → uniform field tree
+  tokenizer.py     SWIFT envelope + block-4 parser: reads the MT number from
+                   Block 2, then tokenizes block 4 → uniform field tree
                    (:16R:/:16S: blocks; :NN[a]:qualifier//value fields)
   fields.py        field-spec catalog: per field/qualifier — format spec,
                    character set, enumerated value domain (sourced from public docs)
@@ -381,10 +382,16 @@ reference), never swallowed and never a hard crash of the run:
 - a transition not in the reachability set (out-of-order / illegal);
 - a response `RELA` matching no sent instruction (orphan).
 
+The **collector is the graceful-degradation boundary**: it parses each browsed
+message inside a guard, converts any tokenize failure or field violation into a
+flagged anomaly on a **single unified anomaly channel** (kinds: malformed /
+field-violation / orphan / transition), and **continues** — one bad message never
+aborts the run. All kinds flow through to the report, the metrics, and the board.
+
 First-order, v2 assumes a valid corpus; the anomaly path is **designed-in** and
 exercised by the anomaly fixtures. This is the v2 realization of the project's
 "no silent failures" rule: a parse or state fault becomes a visible signal, not a
-dropped message.
+dropped message and not a crashed run.
 
 ## 13. Testing strategy
 
