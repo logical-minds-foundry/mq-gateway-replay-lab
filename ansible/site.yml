@@ -26,6 +26,22 @@
   roles:
     - gw-queues
 
+# Provision the SWIFT securities-settlement (v2) audit queues on the same lab
+# queue manager: the parallel GW.SEC.* streaming remote model with a MULTI-DAY
+# CAPEXPRY (the open settlement window, epic #65 spec §4.4). Adds ONLY the
+# experiment's own GW.SEC.* objects and declare-and-verifies the queue manager
+# and the existing inter-QM link — never mutates anything the lab owns.
+#
+# Same active-node piggyback apply and per-play qmgr_name caveat as gw-queues
+# above (apply as its OWN invocation via --limit; see ansible/README.md):
+#   ansible-playbook -i inventory/lab.yml site.yml --limit gateway_qm \
+#     -e qmgr_name=<LAB_QM> -e lab_qm_host=<ACTIVE_NODE>
+- name: Provision the gateway securities-settlement (v2) audit queues
+  hosts: gateway_qm
+  gather_facts: false
+  roles:
+    - gw-sec-queues
+
 # Provision the counterparty's own gateway objects on SVCQM (the their-side
 # half of the same #56 remote topology): the landing queue our request lands
 # on, and the QREMOTE that routes replies back to us. This is the only play in
