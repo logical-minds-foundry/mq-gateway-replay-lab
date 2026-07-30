@@ -20,6 +20,7 @@ the two run side by side on the shared lab box (spec §7 coexistence).
 
 from __future__ import annotations
 
+import argparse
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
@@ -30,7 +31,7 @@ from gwlab.swift.observe import metrics
 from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
 
 if TYPE_CHECKING:
-    import argparse
+    from collections.abc import Sequence
 
     from gwlab.messaging import Messaging
 
@@ -80,3 +81,21 @@ def run(args: argparse.Namespace) -> None:
     horizon = Horizon(days=args.horizon)
     handler = _make_handler(messaging, queues, horizon)
     HTTPServer(("", args.port), handler).serve_forever()
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    """Standalone entry point for the systemd unit (``python -m …serve_http``)."""
+    parser = argparse.ArgumentParser(prog="gwlab.swift.serve_http")
+    parser.add_argument("--qmgr", required=True)
+    parser.add_argument("--conn", required=True, help="ConnectionName, e.g. host(port)")
+    parser.add_argument("--channel", default="APP.SVRCONN")
+    parser.add_argument("--port", type=int, default=9110)
+    parser.add_argument("--tls-cipher", help="e.g. ANY_TLS13_OR_HIGHER (enables TLS)")
+    parser.add_argument("--key-repo", help="GSKit key repository stem (no .p12 suffix)")
+    parser.add_argument("--cert-label", help="client certificate label to present")
+    parser.add_argument("--horizon", type=int, default=3, help="settlement window, business days")
+    run(parser.parse_args(argv))
+
+
+if __name__ == "__main__":
+    main()

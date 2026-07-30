@@ -1,0 +1,41 @@
+---
+# v2 SWIFT settlement observability — parallel to gw-observability (v1), on a
+# DISTINCT port so the two run side by side (spec §7). The exporter runs the swift
+# serve module client-mode against the app queue manager and is scraped by
+# Prometheus; a Grafana board (built by gwlab.swift.board, deployed by
+# gwlab.swift.deploy_http) visualises the swift_settlement_* series. Enabled at
+# install so a lab bring-up includes it — no manual gwlab commands after a rebuild.
+# Parasite rule: adds only the gateway's own exporter/target/board; declares-and-
+# verifies the lab's obs stack, never mutates it.
+
+# --- required apply-time values (no misleading defaults; fail loudly) ----------
+gw_sec_exporter_qmgr: ""       # REQUIRED — the running app queue manager
+gw_sec_exporter_conn: ""       # REQUIRED — ConnectionName, e.g. "10.50.0.11(1414)"
+gw_sec_exporter_channel: APP.SVRCONN
+gw_sec_exporter_port: 9110     # distinct from v1's 9109
+gw_sec_horizon_days: 3
+
+# The exporter host (MQ client + reachability to the QM listener).
+gw_sec_exporter_host: mon-probe
+
+# Reused runtime (same venv/source/keystore layout as gw-observability, so the two
+# roles co-exist idempotently on the exporter host).
+gw_venv: /opt/gwlab-venv
+gw_python: "{{ gw_venv }}/bin/python"
+gw_src_dir: /opt/gwlab-src
+gw_src_local: "{{ playbook_dir }}/../src/gwlab"
+gw_mq_installation: /opt/mqm
+
+# Mutual TLS to the app SVRCONN (the estate mandates TLS 1.3).
+gw_tls_cipher: ANY_TLS13_OR_HIGHER
+gw_key_repo: /var/mqm/ssl/app-client/key
+gw_cert_label: app-client
+gw_app_client_p12: ""          # REQUIRED — path to app-client.p12 on the controller
+gw_app_client_pw: ""           # REQUIRED — the keystore password
+
+# The lab's obs node (Prometheus + Grafana).
+gw_prometheus_targets_dir: /etc/prometheus/targets
+gw_prometheus_url: http://localhost:9090
+gw_grafana_url: http://localhost:3000
+gw_grafana_user: admin
+gw_grafana_password: admin

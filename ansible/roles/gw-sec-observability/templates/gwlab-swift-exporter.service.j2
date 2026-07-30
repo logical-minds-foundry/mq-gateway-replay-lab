@@ -1,0 +1,15 @@
+[Unit]
+Description=gwlab swift settlement exporter ({{ gw_sec_exporter_qmgr }})
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PYTHONPATH={{ gw_src_dir }}
+Environment=MQ_INSTALLATION_PATH={{ gw_mq_installation }}
+ExecStart={{ gw_python }} -m gwlab.swift.serve_http --qmgr {{ gw_sec_exporter_qmgr }} --conn "{{ gw_sec_exporter_conn }}" --channel {{ gw_sec_exporter_channel }} --port {{ gw_sec_exporter_port }} --tls-cipher {{ gw_tls_cipher }} --key-repo {{ gw_key_repo }} --cert-label {{ gw_cert_label }} --horizon {{ gw_sec_horizon_days }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
