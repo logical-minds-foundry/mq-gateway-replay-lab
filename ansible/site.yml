@@ -66,6 +66,31 @@
   roles:
     - gw-svc-queues
 
+# Provision the counterparty's own SWIFT securities-settlement (v2) gateway
+# objects on SVCQM (the their-side half of the same #56 remote topology, epic
+# #65): the landing queue our streamed GW.SEC instructions arrive on, and the
+# QREMOTE that routes the responder's replies back to our GW.SEC.REPLY. Like the
+# v1 gw-svc-queues play above, this is the counterparty side, and it still obeys
+# the parasite rule: it creates ONLY its own GW.SEC.* objects on SVCQM and
+# declare-and-verifies the existing return XMITQ/channel, never touching
+# anything else on that box.
+#
+# Piggyback apply: uses the SAME lab inventory as the plays above (see
+# ansible/README.md) — SVCQM is reached over the lab's existing counterparty
+# link, not a queue manager this repo owns or provisions.
+#
+# Run as its OWN invocation (see the --limit note on the plays above) — its
+# qmgr_name is SVCQM's live instance name, not our queue manager's.
+#
+# Apply against the live lab (see ansible/README.md):
+#   ansible-playbook -i inventory/lab.yml site.yml --limit gateway_svc_qm \
+#     -e qmgr_name=<SVCQM_LIVE_NAME> -e our_qmgr=<LAB_QM>
+- name: Provision the counterparty's (SVCQM) own securities-settlement (v2) gateway objects
+  hosts: gateway_svc_qm
+  gather_facts: false
+  roles:
+    - gw-sec-svc-queues
+
 # Deploy the gateway's observability: the reconcile exporter (a service beside the
 # queue manager), its Prometheus file_sd target, and one board per queue manager
 # co-located with that QM's own lab board. Runs from the obs node (Prometheus +

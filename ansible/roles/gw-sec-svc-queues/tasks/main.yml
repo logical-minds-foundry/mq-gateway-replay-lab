@@ -1,0 +1,87 @@
+---
+- name: Assert the target queue manager name was provided
+  ansible.builtin.assert:
+    that:
+      - qmgr_name is defined
+      - qmgr_name | length > 0
+    fail_msg: >-
+      qmgr_name must be set to the counterparty's running queue manager
+      (SVCQM). gw-sec-svc-queues owns only its own GW.SEC.* objects on that box;
+      it never creates or mutates the queue manager.
+
+- name: Assert our own queue manager name was provided
+  ansible.builtin.assert:
+    that:
+      - our_qmgr is defined
+      - our_qmgr | length > 0
+    fail_msg: >-
+      our_qmgr must be set to our own queue manager's name — it is used as
+      RQMNAME/XMITQ for the reply QREMOTE and to name the return channel. A
+      missing value fails loudly rather than silently wiring the reply route
+      to the wrong box.
+
+- name: Verify the queue manager is running (declare-and-verify; never create it)
+  ansible.builtin.command: /opt/mqm/bin/dspmq -m {{ qmgr_name }}
+  become: true
+  become_user: mqm
+  register: dspmq
+  changed_when: false
+  failed_when: dspmq.rc != 0 or 'Running' not in dspmq.stdout
+
+# --- their own GW.SEC.* objects (the remote model, epic #65) -------------------
+# REPLACE makes every DEFINE below converge to the desired attributes on each
+# apply rather than error on "already exists" — idempotency here means "same
+# state after every run", not "no-op after the first run" — see gw-sec-queues.
+
+- name: Define the landing QLOCAL (our instructions land here; the responder consumes it)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QLOCAL('{{ q_instruct }}') DEFPSIST(YES) SHARE MAXDEPTH({{ gw_sec_max_depth }}) REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_instruct
+  changed_when: "'AMQ8006' in define_instruct.stdout"
+  failed_when: define_instruct.rc != 0
+
+- name: Define the reply QREMOTE (routes replies back to our queue manager, over the existing XMITQ)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QREMOTE('{{ q_reply }}') RNAME('{{ q_reply }}') RQMNAME('{{ our_qmgr }}') XMITQ('{{ our_qmgr }}') REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_reply_remote
+  changed_when: "'AMQ8006' in define_reply_remote.stdout"
+  failed_when: define_reply_remote.rc != 0
+
+# --- the existing return link (the lab's) — declare-and-verify, never create --
+- name: Declare-and-verify the existing return XMITQ to our queue manager (parasite boundary; fail loudly if absent)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY QLOCAL('{{ our_qmgr }}') USAGE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: verify_xmitq
+  changed_when: false
+  failed_when: verify_xmitq.rc != 0 or 'USAGE(XMITQ)' not in verify_xmitq.stdout
+
+- name: Declare-and-verify the existing return channel to our queue manager (parasite boundary; fail loudly if absent)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY CHANNEL('{{ svc_qmgr }}.{{ our_qmgr }}')" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: verify_channel
+  changed_when: false
+  failed_when: verify_channel.rc != 0 or 'CHANNEL(' not in verify_channel.stdout
