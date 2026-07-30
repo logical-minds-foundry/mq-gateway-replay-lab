@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 from gwlab.config import QueueSet
 from gwlab.dashboard import build_dashboard
+from gwlab.swift import cliswift
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -71,6 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
     dash = sub.add_parser("dashboard", help="print the Grafana dashboard JSON")
     dash.add_argument("--qmgr", required=True, help="the queue manager the board targets")
     dash.set_defaults(handler=dashboard_cmd)
+    swift = sub.add_parser("swift", help="SWIFT settlement lifecycle tracking (v2)")
+    cliswift.register(swift)
     return parser
 
 
