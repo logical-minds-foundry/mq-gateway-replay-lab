@@ -50,6 +50,7 @@ omit = [
     "src/gwlab/pymqi_messaging.py",
     "src/gwlab/exporter_server.py",
     "src/gwlab/deploy_http.py",
+    "src/gwlab/swift/serve_http.py",
 ]
 
 [tool.coverage.report]
