@@ -69,7 +69,7 @@ Each modified `src/gwlab/**/<mod>.py` has a sibling `tests/**/test_<mod>.py`. Fi
 - Test: `tests/test_gw_sec_report_queue.py` (renders/asserts the MQSC the role would apply)
 
 **Interfaces:**
-- Produces: a QLOCAL `GW.SEC.REPORT`, `CAPEXPRY({{ gw_sec_capexpry }})`, `MAXDEPTH({{ gw_sec_max_depth }})`, **no `STREAMQ`** (terminal ledger), listed in a new `gw_sec_report_queue` var — the collector's third browse source (Task 5) and the reply target (Task 2).
+- Produces: a QLOCAL `GW.SEC.REPORT`, `CAPEXPRY({{ gw_sec_capexpry }})`, `MAXDEPTH({{ gw_sec_max_depth }})`, **no `STREAMQ`** (terminal ledger), named by a new `q_report` var (matching the `q_instruct`/`q_reply` convention) — the collector's third browse source (Task 5) and the reply target (Task 2).
 
 - [ ] **Step 1: Write the failing test** — assert the role's rendered object set includes a non-streaming `GW.SEC.REPORT` with the SEC-horizon CAPEXPRY and is **absent** from `gw_sec_streams` (it must never stream).
 

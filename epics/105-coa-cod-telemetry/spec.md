@@ -1,6 +1,6 @@
 # Epic #105 — COA/COD transport-milestone telemetry: decomposing `instructed→acknowledged` — spec
 
-**Status:** Design approved; cross-checked against #65's committed work; pushback complete (3 findings resolved); ready for human spec review
+**Status:** Design approved; pushback + alignment complete. **SUSPENDED pending epic #65** — the spec/plan will be refitted to #65's finished data-model/dashboard shape before the docs PR. No docs PR opened; no implementation tasks filed yet.
 **Epic:** logical-minds-foundry/mq-gateway-replay-lab#105
 **Builds on:** epic #65 (Confirmation Tracking v2 — SWIFT MT540–548
 settlement-lifecycle tracking). This epic is a **bolt-on** to #65, sequenced
@@ -387,9 +387,10 @@ Enumerated so the plan is honest (each verified against #65's committed code):
    on the queue-name `SwiftQueueSet` (a category mismatch).
 7. **Transport metrics + two attention sets** as new `observe.Metrics` fields on a
    parallel path (not through `_latencies`); new dashboard rendering.
-8. **`orphan-report` anomaly kind** — `_ANOMALY_KINDS` (`observe.py:55`) is a
-   **closed 4-tuple** iterated by the dashboard (`dashboard._anomaly_panel`);
-   adding the kind means editing that set and the panel, not a free-form add.
+8. **Two new anomaly kinds — `orphan-report` and `clock-skew`** (the latter for a
+   negative/backwards `sent->arrived`, §7.1). `_ANOMALY_KINDS` (`observe.py:55`) is
+   a **closed tuple** iterated by the dashboard (`dashboard._anomaly_panel`); adding
+   kinds means editing that set and the panel, not a free-form add.
 
 **Reused unchanged:** the SEC queue topology and CAPEXPRY horizon; the
 `SEME`/`RELA` body correlation; the MQ put-time as the latency time source; the
