@@ -77,3 +77,15 @@
   gather_facts: false
   roles:
     - gw-observability
+
+# Deploy the v2 SWIFT settlement observability: the swift exporter (a systemd
+# service on a distinct port, TLS client-mode to the app queue manager), its own
+# Prometheus file_sd target + scrape job, and the Grafana settlement board. Runs
+# from the obs node, delegating the exporter service to gw_sec_exporter_host.
+# Enabled at install so a lab bring-up includes it. Owns only the gateway's own
+# swift exporter/target/board; declare-and-verifies the obs stack (parasite rule).
+- name: Deploy the gateway SWIFT settlement observability (exporter, target, board)
+  hosts: gateway_obs
+  gather_facts: false
+  roles:
+    - gw-sec-observability

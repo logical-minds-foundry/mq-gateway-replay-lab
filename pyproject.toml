@@ -51,6 +51,7 @@ omit = [
     "src/gwlab/exporter_server.py",
     "src/gwlab/deploy_http.py",
     "src/gwlab/swift/serve_http.py",
+    "src/gwlab/swift/deploy_http.py",
 ]
 
 [tool.coverage.report]
