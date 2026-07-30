@@ -1,6 +1,6 @@
 # Epic #105 — COA/COD transport-milestone telemetry: decomposing `instructed→acknowledged` — spec
 
-**Status:** Design approved; cross-checked against #65's committed work; ready for pushback
+**Status:** Design approved; cross-checked against #65's committed work; pushback complete (3 findings resolved); ready for human spec review
 **Epic:** logical-minds-foundry/mq-gateway-replay-lab#105
 **Builds on:** epic #65 (Confirmation Tracking v2 — SWIFT MT540–548
 settlement-lifecycle tracking). This epic is a **bolt-on** to #65, sequenced
@@ -60,26 +60,48 @@ decomposition of a leg the business layer treats as atomic.
 
 - **Transparent by construction — zero queue-manager changes.** COA/COD are an
   original-MQSeries, request-driven feature. The sending application sets report
-  options in the message descriptor; provided a valid return route already exists
-  (it does — the reply route this repo already depends on), the counterparty queue
-  manager emits and returns the reports with **no configuration change on either
-  queue manager**. This is the epic's central claim and the reason it satisfies
-  the **parasite / boundary rule**: we configure only queues **we** own (one new
-  report queue) and change **nothing** on the shared lab queue manager or on
-  SVCQM. The proof of transparency *is* the absence of any queue-manager change
-  (§11).
-- **The application is the only non-transparent surface — and part of it is
-  net-new.** Requesting reports means setting report options on the instruction
-  put. But #65 has **not built a live securities putter**: its simulation puts
-  *directly to `GW.SEC.INSTRUCT.AUDIT`* (`simulation._drive_instruction`,
-  `simulation.py:100`), bypassing the `GW.SEC.INSTRUCT` QALIAS, and #65 spec §2 is
-  explicit that v2 has "no putter on any live path." So this epic must **introduce
-  a securities outbound put through the QALIAS** (or, if #65 lands one first, add
-  report options to it). Putting directly to the audit queue would fire COA on the
-  wrong object and defeat the streaming-audit spike (§4). The counterparty
-  responder already consumes destructively (a real settlement app), so COD fires
-  without any change to it; no responder work is in scope. All net-new touchpoints
-  are enumerated in §8.1.
+  options in the message descriptor; the counterparty queue manager emits and
+  returns the reports with **no configuration change on either queue manager**.
+  This is the epic's central claim and the reason it satisfies the **parasite /
+  boundary rule**: we configure only queues **we** own (one new report queue) and
+  change **nothing** on the shared lab queue manager or on SVCQM. The proof of
+  transparency *is* the absence of any queue-manager change (§11).
+- **Why the return route is free (basic store-and-forward).** A report is routed
+  on SVCQM purely by its `ReplyToQMgr` (our queue manager): it lands on whatever
+  transmission queue our QM name resolves to — the **`ReplyToQ` name
+  (`GW.SEC.REPORT`) is never evaluated on SVCQM**. The queue name is resolved only
+  when the report arrives back at *our* queue manager, where `GW.SEC.REPORT` exists
+  because we create it. Since replies to our QM already flow today, the
+  queue-manager-name routing is already proven; the counterparty's specific
+  `GW.SEC.REPLY` object is just an artifact of their app replying to it, not a
+  precondition for reports. Nothing on SVCQM needs to know `GW.SEC.REPORT` exists.
+- **Hard prerequisite: a real end-to-end message flow.** COA/COD are a
+  **real-remote-flow-only phenomenon** — a genuine COA/COD is emitted only by
+  SVCQM, when a real instruction traverses `GW.SEC.INSTRUCT` (QALIAS) → `.AUDIT`
+  → `STREAMQ`(MUSTDUP) → `.REMOTE` (QREMOTE) → SVCQM's landing queue → a real
+  responder's destructive get. #65's current simulation short-circuits this: it
+  puts *directly to `GW.SEC.INSTRUCT.AUDIT`* (`simulation._drive_instruction`,
+  `simulation.py:100`), bypassing the QALIAS and never reaching SVCQM, and #65
+  spec §2 states v2 has "no putter on any live path." **This is a known flaw in
+  #65's implementation that will be corrected in #65** (the outbound must put
+  through the QALIAS and round-trip to the real remote). **This spec is designed
+  as if that real flow exists** — it is #105's foundational prerequisite, because
+  without it there is nothing to generate a COA/COD.
+- **The application is the only non-transparent surface.** Given the real flow,
+  the sole app change is setting the report bits on the QALIAS put (§3). The
+  counterparty responder already consumes destructively (a real settlement app),
+  so COD fires with no change to it; no responder work is in scope beyond the
+  condition-injection below.
+- **Condition injection on the simulated service side.** The metrics and attention
+  sets are only demonstrable if the simulated counterparty can *manufacture* the
+  conditions they reveal — delayed pickup (dwell / service-interval-high), delayed
+  acknowledgement, and non-pickup. So a controllable, condition-injecting service
+  side (delay/withhold pickup and ack per-instruction) is an **implicit
+  requirement** of proving this epic. Its placement — a rework of #65's simulation
+  or a #105 load task — is resolved at plan time (§8.1); the requirement itself is
+  not optional.
+- The remaining net-new plumbing (`msg_id`/`feedback`, the report handler, the
+  report queue, metrics, dashboard) is enumerated in §8.1.
 - **`ARRIVED`/`DELIVERED` are transport milestones, not lifecycle `State`s.** #65's
   six-state reachability graph and its `State` enum (`reference.py`) are untouched.
   Because the milestones are not `State`s, they **cannot** flow through
@@ -175,6 +197,15 @@ gating-spike-first discipline: no collector code is written against unverified
 report behaviour, and a surprising result is a **loud finding**, not a silent
 workaround.
 
+**A negative result is an acceptable terminal outcome.** If the spike finds that
+COA/COD do not compose usefully with the streaming-audit + remote-QM topology
+(e.g. only a local COA fires and SVCQM's is suppressed, or COD timing is
+unusable), that well-characterised finding **is** the epic's value — this is a
+lab, and learning whether the mechanism works over this topology is the point.
+In that case the downstream build tasks are cut and the retrospective records the
+finding; the spike is **not** pass-or-bust, and the epic cannot "fail," only
+conclude.
+
 ## 5. Queue topology — a dedicated terminal report ledger
 
 - **`GW.SEC.REPORT`** — a new queue **we own**, the return address for COA/COD
@@ -266,13 +297,38 @@ raise signal *before* any SWIFT response exists:
   The threshold is a configurable **duration** (§8.1 — it belongs with the other
   durations, not on the queue-name set).
 
+### 7.1 Measurement validity — which legs are single-clock
+
+The sub-legs are not all measured on one clock. `SENT` is stamped by **our** QM;
+`ARRIVED` (COA), `DELIVERED` (COD), and the first MT548 put-time are all stamped
+by **SVCQM**. Therefore:
+
+- **`arrived->delivered` (time on queue)** and **`delivered->acknowledged`** are
+  **single-clock (SVCQM) → skew-free** — a genuine robustness property.
+- **`sent->arrived` (delivery latency)** is the **only cross-clock leg** (SVCQM
+  COA minus our SENT). We **assume NTP-synchronised queue managers** — reasonable
+  for co-located lab boxes — and state that assumption explicitly here. But a
+  skewed clock could corrupt this leg, so a **negative or backwards-in-time
+  `sent->arrived` is treated as an anomaly** (a red flag on the collector's
+  anomaly channel), never surfaced as a silent metric. The lab's actual time-sync
+  configuration is **declare-and-verified** (§11) rather than assumed, since this
+  leg's credibility depends on it.
+- **Tertiary metrics (deferred, not built).** The moment we *receive* each report
+  (its arrival on `GW.SEC.REPORT`) would let us derive report back-propagation
+  times (COA-generated→received, COD-put→received). These are noted as possible
+  future tertiary metrics and are **explicitly out of scope** for now (§12).
+
+To keep `time on queue` exact, the condition-injecting sim responder **commits
+per-instruction** (§8.1); batching gets into one syncpoint would stamp a shared
+COD time and inflate dwell for the early messages in the batch.
+
 ## 8. Architecture — where it lands in `gwlab.swift`
 
-- **Outbound (net-new putter + report request).** Introduce a securities outbound
-  put through the `GW.SEC.INSTRUCT` QALIAS (see §8.1), gated by `request_reports`.
-  The `Messaging` abstraction gains the ability to set
-  `Report`/`ReplyToQ`/`ReplyToQMgr` on a put, in both `fake_messaging` and
-  `pymqi_messaging`.
+- **Outbound (report options on the put).** The securities put through the
+  `GW.SEC.INSTRUCT` QALIAS is the §8.1 prerequisite (#65's fix); #105 adds the
+  **report request** to it, gated by `request_reports`. The `Messaging` abstraction
+  gains the ability to set `Report`/`ReplyToQ`/`ReplyToQMgr` on a put, in both
+  `fake_messaging` and `pymqi_messaging`.
 - **Collector (third source, distinct path).** #65's collector is a **sequential
   browse loop** over `((instruct_audit, instructions), (status_audit, responses))`
   (`collect.py:107-116`). This epic adds a **third entry** for `GW.SEC.REPORT` —
@@ -298,12 +354,24 @@ raise signal *before* any SWIFT response exists:
 
 Enumerated so the plan is honest (each verified against #65's committed code):
 
-**Net-new (must be built):**
-1. **Securities outbound putter through the QALIAS** — #65 has none; its sim puts
-   direct-to-audit (`simulation.py:100`). Add the putter and a **`instruct` QALIAS
-   field** (`GW.SEC.INSTRUCT`) on `SwiftQueueSet` (`swiftconfig.py`, currently only
-   `instruct_audit`/`status_audit`), and wire the simulation to put through it so
-   streaming/COA behaviour is exercised.
+**Prerequisite (delivered by #65's fix, not built here):**
+0. **A real end-to-end securities flow** — the outbound put goes through the
+   `GW.SEC.INSTRUCT` QALIAS and round-trips to a real SVCQM responder (correcting
+   #65's `direct-to-audit` shortcut, `simulation.py:100`). This includes a
+   `instruct` QALIAS field on `SwiftQueueSet` (`swiftconfig.py`, currently only
+   `instruct_audit`/`status_audit`). #105 is designed on top of this (§2); if #65
+   has not yet landed it when #105 starts, #105's first build step is to establish
+   it, but conceptually it is #65's correctness fix.
+
+**Net-new (must be built in #105):**
+1. **Report options on the outbound put** — set `Report`/`ReplyToQ`/`ReplyToQMgr`
+   on the QALIAS put, gated by `request_reports`.
+1b. **Condition-injecting service side** — controllable per-instruction delay /
+   withholding of pickup and acknowledgement on the simulated counterparty, to
+   manufacture the dwell / stuck-on-queue / slow-ack conditions the metrics reveal
+   (§2). It **commits each get per-instruction** (not batched), so `time on queue`
+   is exact (§7.1). Placement (rework #65's simulation vs a #105 load task) decided
+   at plan time.
 2. **`msg_id` propagation** through `model.SwiftMessage` → `collect` → `correlate`
    → `lifecycle.InstructionState` (§6) — today MsgId is discarded after anomaly
    labelling.
@@ -369,6 +437,13 @@ A **live-run validation** task (issue #108): drive a day's instructions with
    after** (a captured MQSC/config diff showing no change). This diff **is** the
    transparency proof and the headline acceptance criterion.
 
+Additionally, a lightweight **time-sync sanity check** (declare-and-verify, not a
+mutation): confirm what the lab actually does to keep the queue-manager host
+clocks synchronised — presumed to be the default host-machine sync, but never yet
+verified or measured — and record whether the clocks are in fact staying in sync,
+since the `sent->arrived` leg (§7.1) depends on it. A drift finding is a loud
+signal, not a silent correction.
+
 ## 12. Scope — explicitly out
 
 - No change to #65's six-state machine, business-state latencies, or attention
@@ -380,6 +455,9 @@ A **live-run validation** task (issue #108): drive a day's instructions with
 - No remediation/replay action on a missing report — reporting/observability only,
   matching #65's boundary.
 - No queue-manager, SVCQM, or channel configuration changes (the entire point).
+- **Deferred tertiary metrics** — report back-propagation times derived from when
+  each report is *received* on `GW.SEC.REPORT` (COA-generated→received,
+  COD-put→received). Noted as possible future work (§7.1); not built now.
 
 ## 13. Success criteria
 
