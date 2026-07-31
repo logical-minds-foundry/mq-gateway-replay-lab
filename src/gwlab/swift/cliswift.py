@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.swift.collect import collect
 from gwlab.swift.dashboard import render_board
+from gwlab.swift.exposition import append_gauge
 from gwlab.swift.observe import metrics
 from gwlab.swift.simulation import (
     SILENT_PATH,
@@ -68,7 +69,16 @@ _TWO_DAYS = 2 * 24 * 60 * 60.0
 # Prometheus metric names — all ``swift_`` prefixed, so they never collide with
 # v1's ``gwlab_`` families (no v1 metric name is touched).
 _STATE_METRIC = "swift_settlement_state"
-_STATE_HELP = "Instructions in each lifecycle state (the hero distribution)."
+# The in-flight buckets (instructed/acknowledged/matched) are *current* snapshots;
+# the terminal-outcome buckets (settled/rejected/failed) are **windowed gauges over
+# the retention horizon** — "settled within the retained N-day window" — since a
+# count only means something over a window (design §6.1). The state already windows
+# them (a complete lifecycle drops once complete-and-expired); this note documents
+# the meaning, it changes no number.
+_STATE_HELP = (
+    "Instructions in each lifecycle state (the hero distribution); the "
+    "settled/rejected/failed outcome buckets are windowed over the retention horizon (design §6.1)."
+)
 _ANOMALY_METRIC = "swift_settlement_anomalies"
 _ANOMALY_HELP = "Surfaced anomalies broken out by kind (never swallowed)."
 _ANOMALY_TOTAL_METRIC = "swift_settlement_anomalies_total"
@@ -140,9 +150,7 @@ def render_exposition(snapshot: Metrics, collect_seconds: float | None = None) -
         (_SCANNED_METRIC, _SCANNED_HELP, snapshot.scanned),
     )
     for name, help_text, value in scalars:
-        lines.append(f"# HELP {name} {help_text}")
-        lines.append(f"# TYPE {name} gauge")
-        lines.append(f"{name} {value}")
+        append_gauge(lines, name, help_text, value)
 
     lines.append(f"# HELP {_HOP_MEAN_METRIC} {_HOP_MEAN_HELP}")
     lines.append(f"# TYPE {_HOP_MEAN_METRIC} gauge")
@@ -153,9 +161,7 @@ def render_exposition(snapshot: Metrics, collect_seconds: float | None = None) -
         lines.append(f'{_HOP_P95_METRIC}{{hop="{stat.hop}"}} {stat.p95_seconds}')
 
     if collect_seconds is not None:
-        lines.append(f"# HELP {_COLLECT_SECONDS_METRIC} {_COLLECT_SECONDS_HELP}")
-        lines.append(f"# TYPE {_COLLECT_SECONDS_METRIC} gauge")
-        lines.append(f"{_COLLECT_SECONDS_METRIC} {collect_seconds}")
+        append_gauge(lines, _COLLECT_SECONDS_METRIC, _COLLECT_SECONDS_HELP, collect_seconds)
 
     return "\n".join(lines) + "\n"
 
