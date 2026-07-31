@@ -21,6 +21,12 @@ deliberately simple and documented here so the shortcut is explicit.
 The window boundary is inclusive at both ends: an instruction put exactly
 ``horizon.days`` days ago is still in scope *and*, if non-terminal, aged out —
 which is precisely the "about to fall out of retention, still unconfirmed" case.
+
+**Compression-aware (load-sim §7).** Both predicates work in *sim-time*: the
+horizon is scaled by ``1 / horizon.compression`` in real terms, so under a
+time-compressed run (``C`` > 1) a whole multi-day sim collapses into real minutes
+and aged-out still fires. At ``C = 1`` (the production default) the real horizon
+is exactly ``horizon.days`` days and behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -42,19 +48,27 @@ if TYPE_CHECKING:
 _TERMINAL: frozenset[State] = TERMINAL_NEGATIVE | {State.SETTLED}
 
 
+def _real_horizon(horizon: Horizon) -> timedelta:
+    """The horizon as real (wall-clock) elapsed time: sim-days scaled by ``1 / C``."""
+    return timedelta(days=horizon.days) / horizon.compression
+
+
 def in_window(put_time: datetime, now: datetime, horizon: Horizon) -> bool:
     """Whether a message put at ``put_time`` is still within the settlement window."""
-    return now - put_time <= timedelta(days=horizon.days)
+    return now - put_time <= _real_horizon(horizon)
 
 
 def is_aged_out(state: InstructionState, now: datetime, horizon: Horizon) -> bool:
     """Whether an instruction is non-terminal and has been open a full horizon.
 
     ``True`` when the folded lifecycle has not reached SETTLED / REJECTED / FAILED
-    and the instruction (its INSTRUCTED hop) is at least ``horizon.days`` days old
-    — the in-flight instructions at the edge of retention that warrant a replay.
+    and the instruction (its INSTRUCTED hop) is at least a full horizon old — the
+    in-flight instructions at the edge of retention that warrant a replay. The
+    horizon is the sim-time window scaled by ``1 / horizon.compression``, so
+    aged-out fires under compression (``C`` > 1) and collapses to ``horizon.days``
+    real days at ``C = 1``.
     """
     if state.current in _TERMINAL:
         return False
     instructed_at = state.hops[0].at
-    return now - instructed_at >= timedelta(days=horizon.days)
+    return now - instructed_at >= _real_horizon(horizon)

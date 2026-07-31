@@ -97,6 +97,23 @@ def _bargauge(
     }
 
 
+def _compression_var() -> dict[str, Any]:
+    """A dashboard variable ``$compression`` so the operator recovers sim-time durations.
+
+    Under a time-compressed run (load-sim §7) the exporter records *real*
+    (compressed) durations; multiplying the duration panels by this factor ``C``
+    recovers the sim-time latencies. Default ``"1"`` is real time (no transform).
+    """
+    return {
+        "name": "compression",
+        "type": "textbox",
+        "label": "Time-compression factor (C)",
+        "query": "1",
+        "current": {"text": "1", "value": "1", "selected": True},
+        "options": [{"text": "1", "value": "1", "selected": True}],
+    }
+
+
 def _timeseries(
     pid: int,
     title: str,
@@ -138,8 +155,10 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         ("Anomalies", "swift_settlement_anomalies_total", "purple"),
         ("Scanned", "swift_settlement_scanned", "text"),
     ]
-    mean_target = _target("swift_settlement_hop_mean_seconds", "{{hop}}", ds_uid)
-    p95_target = _target("swift_settlement_hop_p95_seconds", "{{hop}}", ds_uid)
+    # Duration panels are scaled by $compression so the operator recovers sim-time
+    # latencies from the real (compressed) durations the exporter records (§7).
+    mean_target = _target("swift_settlement_hop_mean_seconds * $compression", "{{hop}}", ds_uid)
+    p95_target = _target("swift_settlement_hop_p95_seconds * $compression", "{{hop}}", ds_uid)
 
     panels: list[dict[str, Any]] = [_text(1, _grid(0, 0, 24, 3), header)]
     for index, (title, expr, color) in enumerate(kpis):
@@ -174,5 +193,6 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         "schemaVersion": 39,
         "refresh": "30s",
         "time": {"from": "now-6h", "to": "now"},
+        "templating": {"list": [_compression_var()]},
         "panels": panels,
     }

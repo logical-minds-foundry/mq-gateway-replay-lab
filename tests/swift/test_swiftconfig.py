@@ -19,3 +19,8 @@ def test_queue_set_names_are_overridable() -> None:
 def test_horizon_default_covers_a_settlement_cycle() -> None:
     assert Horizon().days == 3
     assert Horizon(days=5).days == 5
+
+
+def test_horizon_compression_defaults_to_real_time_and_is_overridable() -> None:
+    assert Horizon().compression == 1.0  # production default: real time
+    assert Horizon(days=3, compression=60.0).compression == 60.0

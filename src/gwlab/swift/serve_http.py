@@ -21,13 +21,12 @@ the two run side by side on the shared lab box (spec §7 coexistence).
 from __future__ import annotations
 
 import argparse
+import time
 from datetime import UTC, datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
 
-from gwlab.swift.cliswift import render_exposition
-from gwlab.swift.collect import collect
-from gwlab.swift.observe import metrics
+from gwlab.swift.cliswift import render_exposition, timed_metrics
 from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
 
 if TYPE_CHECKING:
@@ -60,8 +59,10 @@ def _make_handler(
                 self.end_headers()
                 return
             now = datetime.now(UTC)
-            snapshot = metrics(collect(messaging, queues, now, horizon), now)
-            body = render_exposition(snapshot).encode()
+            snapshot, collect_seconds = timed_metrics(
+                messaging, queues, now, horizon, time.monotonic
+            )
+            body = render_exposition(snapshot, collect_seconds).encode()
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))
@@ -78,7 +79,7 @@ def run(args: argparse.Namespace) -> None:
     """Connect once (optionally over TLS) and serve the exposition until killed."""
     messaging = connect(args)
     queues = SwiftQueueSet()
-    horizon = Horizon(days=args.horizon)
+    horizon = Horizon(days=args.horizon, compression=args.compression)
     handler = _make_handler(messaging, queues, horizon)
     HTTPServer(("", args.port), handler).serve_forever()
 
@@ -94,6 +95,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--key-repo", help="GSKit key repository stem (no .p12 suffix)")
     parser.add_argument("--cert-label", help="client certificate label to present")
     parser.add_argument("--horizon", type=int, default=3, help="settlement window, business days")
+    parser.add_argument(
+        "--compression", type=float, default=1.0, help="time-compression factor C (§7)"
+    )
     run(parser.parse_args(argv))
 
 
