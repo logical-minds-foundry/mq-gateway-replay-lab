@@ -94,6 +94,17 @@ def test_render_exposition_on_empty_metrics_has_zeroed_states_and_no_hops() -> N
     assert "swift_settlement_hop_mean_seconds{" not in out  # no completed hops
 
 
+def test_state_help_documents_windowed_outcome_semantics() -> None:
+    # The settled/rejected/failed outcome buckets are windowed gauges over the
+    # retention horizon (design §6.1) — documented in the HELP, no numeric change.
+    out = cliswift.render_exposition(_seeded_metrics())
+    help_line = next(
+        line for line in out.splitlines() if line.startswith("# HELP swift_settlement_state ")
+    )
+    assert "windowed" in help_line
+    assert "retention horizon" in help_line
+
+
 # --- the exporter self-timing metric -----------------------------------------
 
 
