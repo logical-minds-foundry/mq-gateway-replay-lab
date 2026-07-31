@@ -1,0 +1,34 @@
+[Unit]
+Description=gwlab streaming settlement collector ({{ gw_collector_qmgr }}, client-mode on {{ gw_collector_host }})
+After=network-online.target
+Wants=network-online.target
+# Fail loud on a crash-loop (design §8.1): repeated fast failures drive the unit
+# into `failed` (alertable) rather than an invisible restart storm. In modern
+# systemd these two directives live in [Unit], not [Service].
+StartLimitIntervalSec={{ gw_collector_start_limit_interval_sec }}
+StartLimitBurst={{ gw_collector_start_limit_burst }}
+
+[Service]
+Type=simple
+# Run as the dedicated monitoring identity on the probe (design §8) — not the app
+# or responder identities.
+User={{ gw_collector_user }}
+Group={{ gw_collector_group }}
+# pymqi loads the MQ client libraries at runtime.
+Environment=LD_LIBRARY_PATH={{ gw_collector_mq_installation }}/lib64
+Environment=MQ_INSTALLATION_PATH={{ gw_collector_mq_installation }}
+# The installed artifact's stable entry point (design §9) — NOT source + PYTHONPATH.
+# --conn carries a comma-separated CONNAME list of every node: Native HA has no VIP,
+# so the reconnectable client reaches whichever node holds the queue manager (§8).
+{% if gw_collector_tls_cipher | length > 0 %}
+ExecStart={{ gw_collector_bin }} --qmgr {{ gw_collector_qmgr }} --conn "{{ gw_collector_conn }}" --channel {{ gw_collector_channel }} --port {{ gw_collector_port }} --tls-cipher {{ gw_collector_tls_cipher }} --key-repo {{ gw_collector_key_repo }} --cert-label {{ gw_collector_cert_label }} --horizon {{ gw_collector_horizon_days }} --poll-seconds {{ gw_collector_poll_seconds }}
+{% else %}
+ExecStart={{ gw_collector_bin }} --qmgr {{ gw_collector_qmgr }} --conn "{{ gw_collector_conn }}" --channel {{ gw_collector_channel }} --port {{ gw_collector_port }} --horizon {{ gw_collector_horizon_days }} --poll-seconds {{ gw_collector_poll_seconds }}
+{% endif %}
+# Crash -> restart -> cold-reload: on a genuine crash systemd restarts the unit and
+# the first lap rebuilds state (design §8.1). A client need not die with the QM.
+Restart=always
+RestartSec={{ gw_collector_restart_sec }}
+
+[Install]
+WantedBy=multi-user.target
