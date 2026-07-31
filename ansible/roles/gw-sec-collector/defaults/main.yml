@@ -1,0 +1,38 @@
+---
+# gw-sec-collector — install the streaming settlement collector as a REAL
+# installed artifact on the monitoring probe (epic #65, streaming-collector
+# design §9). The production end-state is "installed built artifact + stable
+# entry point", NOT "source tree + PYTHONPATH": build a wheel from this repo,
+# then install it into an isolated /opt/gwlab virtualenv on mon-probe so the
+# collector runs as /opt/gwlab/bin/gwlab-collector — the exact line a packaged
+# install would expose. The box-only serve loop, CCDT/monitoring identity, and
+# systemd unit arrive in later tasks of the plan; this role is the T1 packaging
+# skeleton (build + install the entry point).
+#
+# Parasite rule: this installs ONLY the gateway's own artifact under /opt/gwlab
+# on the probe; it never mutates the base lab's exporter, keystores, or QM.
+
+# The monitoring probe — a stable off-cluster node that already carries the MQ
+# client libraries for the base mq_prometheus exporter (mirrors mq-exporter's
+# "on mon-probe" host targeting). The collector is installed and (later) run here.
+gw_collector_host: mon-probe
+
+# Isolated install prefix. The virtualenv is rooted here, so its own bin/ exposes
+# the console_scripts entry point directly at /opt/gwlab/bin/gwlab-collector — no
+# source tree, no PYTHONPATH, no symlink needed (the venv layout IS the entry
+# point). Kept distinct from the source-tree venv the v1/v2 exporters still use
+# (/opt/gwlab-venv, /opt/gwlab-src) so the two models co-exist on the probe.
+gw_collector_prefix: /opt/gwlab
+gw_collector_bin: "{{ gw_collector_prefix }}/bin/gwlab-collector"
+
+# Controller-side build. uv builds the wheel from the repo root into dist/; the
+# artifact is representative of a package-index install, reached by a local build.
+gw_collector_project_root: "{{ playbook_dir }}/.."
+gw_collector_dist_dir: "{{ gw_collector_project_root }}/dist"
+
+# Host-side staging dir for the copied wheel (the artifact handed to the probe's
+# pip install; separate from the venv so a re-build/re-install is a clean replace).
+gw_collector_stage_dir: /opt/gwlab-dist
+
+# The interpreter the isolated venv is built from (mon-probe's system Python).
+gw_collector_base_python: /usr/bin/python3

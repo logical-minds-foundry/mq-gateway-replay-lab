@@ -8,6 +8,7 @@ dependencies = []
 
 [project.scripts]
 gwlab = "gwlab.cli:main"
+gwlab-collector = "gwlab.swift.stream.serve_collector:main"
 
 [dependency-groups]
 dev = ["ruff", "mypy", "ty", "pytest", "pytest-cov", "pip-audit", "pip-licenses"]

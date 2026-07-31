@@ -1,0 +1,39 @@
+---
+# Build the gwlab wheel on the controller (epic #65, design §9). One distribution
+# exposes many console_scripts (gwlab, gwlab-collector, gwlab-responder); building
+# the wheel here produces the artifact install.yml lands on the probe. Split from
+# install.yml (mirroring mq-exporter's build/instance split) so the artifact is
+# built once and can be installed on one or more probes without rebuilding.
+
+- name: Build the gwlab wheel (uv build --wheel)
+  ansible.builtin.command:
+    cmd: uv build --wheel --out-dir "{{ gw_collector_dist_dir }}"
+    chdir: "{{ gw_collector_project_root }}"
+  delegate_to: localhost
+  run_once: true
+  register: gw_collector_build
+  changed_when: true
+
+# Resolve the freshest built wheel (avoid hardcoding the version in the filename;
+# the build stamps gwlab-<version>-py3-none-any.whl).
+- name: Locate the built wheel
+  ansible.builtin.find:
+    paths: "{{ gw_collector_dist_dir }}"
+    patterns: "gwlab-*.whl"
+  delegate_to: localhost
+  run_once: true
+  register: gw_collector_found_wheels
+
+- name: Assert exactly one candidate wheel was built
+  ansible.builtin.assert:
+    that:
+      - gw_collector_found_wheels.files | length > 0
+    fail_msg: >-
+      No gwlab-*.whl found in {{ gw_collector_dist_dir }} after the build — the
+      wheel build must produce the artifact install.yml installs. A missing
+      artifact is a loud failure, not a silently skipped install.
+
+- name: Select the newest built wheel as the artifact to install
+  ansible.builtin.set_fact:
+    gw_collector_wheel: >-
+      {{ (gw_collector_found_wheels.files | sort(attribute='mtime') | last).path }}
