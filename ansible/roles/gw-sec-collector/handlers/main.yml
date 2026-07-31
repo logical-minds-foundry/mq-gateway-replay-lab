@@ -1,0 +1,8 @@
+---
+# Reload (not restart) the lab's Prometheus after the gateway adds its own scrape
+# job — a live config reload, never a restart of the lab's service (parasite rule).
+- name: reload prometheus
+  ansible.builtin.systemd:
+    name: prometheus
+    state: reloaded
+  become: true
