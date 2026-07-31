@@ -45,12 +45,15 @@ testpaths = ["tests"]
 # (the two-process last-hour run — demo/gateway_driver.py + demo/svc_responder.py
 # — plus the remote proof harnesses under demo/proofs/), not by unit tests. The exporter
 # HTTP server binds a socket and connects via pymqi, so it is likewise box-only;
-# the exposition it serves (exporter.render) is unit-tested.
+# the exposition it serves (exporter.render) is unit-tested. The SVC responder's
+# live loop (serve_responder) is likewise box-only — it drives pymqi UOWs and sleeps
+# against real time; its planning/scheduling cores (responder_app, scheduler) are.
 omit = [
     "src/gwlab/pymqi_messaging.py",
     "src/gwlab/exporter_server.py",
     "src/gwlab/deploy_http.py",
     "src/gwlab/swift/serve_http.py",
+    "src/gwlab/swift/serve_responder.py",
     "src/gwlab/swift/deploy_http.py",
     "src/gwlab/swift/gateway_run.py",
 ]
