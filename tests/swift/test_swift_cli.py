@@ -94,6 +94,30 @@ def test_render_exposition_on_empty_metrics_has_zeroed_states_and_no_hops() -> N
     assert "swift_settlement_hop_mean_seconds{" not in out  # no completed hops
 
 
+# --- the exporter self-timing metric -----------------------------------------
+
+
+def test_timed_metrics_measures_the_pass_with_an_injected_monotonic() -> None:
+    # scripted monotonic: 0.5s elapses between the two reads bracketing the pass
+    ticks = iter([100.0, 100.5])
+    snapshot, collect_seconds = cliswift.timed_metrics(
+        _seeded_fake(), SwiftQueueSet(), NOW, _HORIZON, lambda: next(ticks)
+    )
+    assert collect_seconds == 0.5
+    assert snapshot.scanned > 0  # the seeded audit set was actually folded
+
+
+def test_render_exposition_emits_collect_seconds_when_timed() -> None:
+    out = cliswift.render_exposition(_seeded_metrics(), collect_seconds=0.5)
+    assert "# TYPE swift_settlement_collect_seconds gauge" in out
+    assert "swift_settlement_collect_seconds 0.5" in out
+
+
+def test_render_exposition_omits_collect_seconds_when_untimed() -> None:
+    out = cliswift.render_exposition(_seeded_metrics())
+    assert "swift_settlement_collect_seconds" not in out
+
+
 # --- report -------------------------------------------------------------------
 
 
@@ -197,6 +221,13 @@ def test_serve_default_port_is_distinct_from_v1() -> None:
     assert port == cliswift.DEFAULT_PORT
     assert cliswift.DEFAULT_PORT != cliswift.V1_PORT
     assert cliswift.V1_PORT == 9109  # v1's exporter default (gwlab.exporter_server)
+
+
+def test_compression_flag_defaults_to_real_time_and_parses() -> None:
+    parser = cli.build_parser()
+    assert parser.parse_args(["swift", "report", *_CONN_ARGS]).compression == 1.0
+    args = parser.parse_args(["swift", "report", "--compression", "60", *_CONN_ARGS])
+    assert args.compression == 60.0
 
 
 def test_missing_swift_subcommand_is_an_error() -> None:

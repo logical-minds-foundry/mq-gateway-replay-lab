@@ -31,6 +31,14 @@ class Horizon:
     Because a settlement lifecycle spans days, retention (``CAPEXPRY``) and
     reporting follow this horizon rather than the calendar day (spec §4.4). The
     plan (task #88) sizes the concrete value against real volumes.
+
+    ``compression`` is the single time-compression factor ``C`` (load-sim §7): a
+    whole multi-day sim runs in real ``days/C`` so the window can fire without
+    waiting days. The window works in **sim-time** — it scales the horizon by
+    ``1/C`` in real terms (``in_window`` / ``is_aged_out``), so aged-out fires
+    correctly under compression. ``C = 1`` (the default, production) collapses to
+    real-time behaviour: the horizon is exactly ``days`` real days.
     """
 
     days: int = 3
+    compression: float = 1.0

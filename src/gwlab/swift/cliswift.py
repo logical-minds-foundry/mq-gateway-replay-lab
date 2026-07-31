@@ -47,6 +47,7 @@ from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
 
 if TYPE_CHECKING:
     import argparse
+    from collections.abc import Callable
 
     from gwlab.messaging import Messaging
     from gwlab.swift.observe import Metrics
@@ -82,15 +83,43 @@ _HOP_MEAN_METRIC = "swift_settlement_hop_mean_seconds"
 _HOP_MEAN_HELP = "Mean latency of each inter-state lifecycle hop, in seconds."
 _HOP_P95_METRIC = "swift_settlement_hop_p95_seconds"
 _HOP_P95_HELP = "Nearest-rank p95 latency of each inter-state lifecycle hop, in seconds."
+_COLLECT_SECONDS_METRIC = "swift_settlement_collect_seconds"
+_COLLECT_SECONDS_HELP = (
+    "Wall-clock of the last full collect()+metrics pass (the exporter's self-timing, "
+    "load-sim §9.2) — must stay well under the scrape interval so passes never back up."
+)
 
 
-def render_exposition(snapshot: Metrics) -> str:
+def timed_metrics(
+    messaging: Messaging,
+    queues: SwiftQueueSet,
+    now: datetime,
+    horizon: Horizon,
+    monotonic: Callable[[], float],
+) -> tuple[Metrics, float]:
+    """Fold one full collect pass, timing its wall-clock via an injected ``monotonic``.
+
+    Returns ``(snapshot, collect_seconds)`` where ``collect_seconds`` is the
+    wall-clock of the whole ``collect()`` + ``metrics()`` pass — the exporter's
+    self-timing (load-sim §9.2). ``monotonic`` is injected (a
+    ``Callable[[], float]``) so the timing is deterministically testable against a
+    fake clock; the live exporter passes :func:`time.monotonic`.
+    """
+    start = monotonic()
+    snapshot = metrics(collect(messaging, queues, now, horizon), now)
+    collect_seconds = monotonic() - start
+    return snapshot, collect_seconds
+
+
+def render_exposition(snapshot: Metrics, collect_seconds: float | None = None) -> str:
     """Render a settlement :class:`Metrics` snapshot as Prometheus text exposition.
 
     Pure function of the snapshot — no clock read, no I/O — so it is fully
     deterministic and unit-tested. Emits the state distribution, the per-kind and
     total anomaly counts, the aging / aged-out / scan-cost gauges, and the
-    per-hop mean/p95 latencies.
+    per-hop mean/p95 latencies. When ``collect_seconds`` is supplied (the live
+    exporter times each pass via :func:`timed_metrics`), it also emits the
+    ``swift_settlement_collect_seconds`` self-timing gauge.
     """
     lines: list[str] = []
 
@@ -122,6 +151,11 @@ def render_exposition(snapshot: Metrics) -> str:
     for stat in snapshot.latencies:
         lines.append(f'{_HOP_MEAN_METRIC}{{hop="{stat.hop}"}} {stat.mean_seconds}')
         lines.append(f'{_HOP_P95_METRIC}{{hop="{stat.hop}"}} {stat.p95_seconds}')
+
+    if collect_seconds is not None:
+        lines.append(f"# HELP {_COLLECT_SECONDS_METRIC} {_COLLECT_SECONDS_HELP}")
+        lines.append(f"# TYPE {_COLLECT_SECONDS_METRIC} gauge")
+        lines.append(f"{_COLLECT_SECONDS_METRIC} {collect_seconds}")
 
     return "\n".join(lines) + "\n"
 
@@ -197,7 +231,7 @@ def _demo_scenario() -> Scenario:
 def _collect_metrics(messaging: Messaging, args: argparse.Namespace, now: datetime) -> Metrics:
     """Browse the audits and fold them into the day's settlement :class:`Metrics`."""
     queues = SwiftQueueSet()
-    horizon = Horizon(days=args.horizon)
+    horizon = Horizon(days=args.horizon, compression=args.compression)
     report = collect(messaging, queues, now, horizon)
     return metrics(report, now)
 
@@ -212,7 +246,7 @@ def _connect(args: argparse.Namespace) -> Messaging:
 def simulate_cmd(args: argparse.Namespace) -> int:
     """Drive the demonstrator scenario into an in-memory audit set and print the picture."""
     now = _now()
-    horizon = Horizon(days=args.horizon)
+    horizon = Horizon(days=args.horizon, compression=args.compression)
     start = now - timedelta(days=horizon.days)
     report = run_window(FakeMessaging(), SwiftQueueSet(), horizon, _demo_scenario(), start, now)
     print(_render_report_text(metrics(report, now)))
@@ -260,9 +294,15 @@ def _add_connection_args(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_horizon(parser: argparse.ArgumentParser) -> None:
-    """Add the ``--horizon`` (settlement window, business days) flag."""
+    """Add the ``--horizon`` (window, days) and ``--compression`` (factor C) flags."""
     parser.add_argument(
         "--horizon", type=int, default=Horizon().days, help="settlement window, days"
+    )
+    parser.add_argument(
+        "--compression",
+        type=float,
+        default=Horizon().compression,
+        help="time-compression factor C (load-sim §7); 1.0 = real time",
     )
 
 
