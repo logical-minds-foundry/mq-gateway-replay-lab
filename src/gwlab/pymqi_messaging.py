@@ -12,6 +12,7 @@ end-to-end on the box (the audit queues are produced by the queue manager's
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,20 @@ from gwlab.messaging import Message
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+
+@dataclass
+class _BrowseCursor:
+    """A parked browse handle for ``browse_new`` on a single queue.
+
+    ``started`` records whether the cursor has been positioned yet: the first
+    drain uses ``MQGMO_BROWSE_FIRST``, every later drain ``MQGMO_BROWSE_NEXT``,
+    so the handle keeps its place across calls and a browsed message is never
+    returned twice.
+    """
+
+    handle: Any
+    started: bool = False
 
 
 def _put_time(md: Any) -> datetime | None:
@@ -80,6 +95,7 @@ class PyMqiMessaging:
         else:
             self._qmgr.connect_with_options(qmgr_name, cd=cd, opts=opts)
         self._queues: dict[tuple[str, int], Any] = {}
+        self._browse_cursors: dict[str, _BrowseCursor] = {}
 
     def _open(self, queue: str, opts: int) -> Any:
         key = (queue, opts)
@@ -148,6 +164,53 @@ class PyMqiMessaging:
 
     def browse(self, queue: str) -> list[Message]:
         return list(self._browse_iter(queue))
+
+    def browse_new(self, queue: str) -> list[Message]:
+        """Persistent-cursor browse: the first call returns every message from the
+        first; each later call returns only messages that arrived since the
+        previous call (see the ``Messaging`` protocol).
+
+        One browse handle per queue is kept open across calls: ``BROWSE_FIRST``
+        positions it on the first drain, ``BROWSE_NEXT`` reads the delta on every
+        later drain, each stopping at ``MQRC_NO_MSG_AVAILABLE`` (2033) **without
+        closing the handle** so the cursor is retained. A dropped connection
+        (``MQRC_CONNECTION_BROKEN``) discards the cursor, so the next call re-opens
+        at ``BROWSE_FIRST`` — a full re-read, which is the cold-reload recovery
+        path (the caller's fold is idempotent under that replay).
+        """
+        cursor = self._browse_cursors.get(queue)
+        if cursor is None:
+            cursor = _BrowseCursor(handle=self._pymqi.Queue(self._qmgr, queue, self._c.MQOO_BROWSE))
+            self._browse_cursors[queue] = cursor
+        messages: list[Message] = []
+        while True:
+            first = self._c.MQGMO_BROWSE_FIRST
+            following = self._c.MQGMO_BROWSE_NEXT
+            option = following if cursor.started else first
+            md = self._pymqi.MD()
+            gmo = self._pymqi.GMO(Options=option | self._c.MQGMO_NO_WAIT)
+            try:
+                body = cursor.handle.get(None, md, gmo)
+            except self._pymqi.MQMIError as exc:
+                if exc.reason == self._c.MQRC_NO_MSG_AVAILABLE:
+                    cursor.started = True
+                    return messages
+                if exc.reason == self._c.MQRC_CONNECTION_BROKEN:
+                    # The reconnect dropped the browse cursor; discard it so the
+                    # next call re-opens the queue and re-reads from the first
+                    # message (cold reload) rather than silently skipping any.
+                    del self._browse_cursors[queue]
+                    return messages
+                raise
+            cursor.started = True
+            messages.append(
+                Message(
+                    body=body,
+                    msg_id=bytes(md.MsgId),
+                    correl_id=bytes(md.CorrelId),
+                    put_time=_put_time(md),
+                )
+            )
 
     def commit(self) -> None:
         self._qmgr.commit()

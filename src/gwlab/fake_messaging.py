@@ -32,6 +32,7 @@ class FakeMessaging:
         self._streams: dict[str, str] = {}
         self._clock = clock
         self._next_msgid = 0
+        self._browse_cursor: dict[str, int] = {}
 
     def configure_stream(self, source: str, target: str) -> None:
         """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
@@ -66,6 +67,20 @@ class FakeMessaging:
 
     def browse(self, queue: str) -> list[Message]:
         return list(self._committed.get(queue, []))
+
+    def browse_new(self, queue: str) -> list[Message]:
+        """Persistent-cursor browse (see the ``Messaging`` protocol).
+
+        A per-queue high-water index models the live adapter's parked browse
+        cursor: the first call returns every committed message, each later call
+        only those committed since — never re-reading a message. Uncommitted
+        staged puts are invisible (they are not yet on the queue), exactly as a
+        live browse would not see an in-flight, uncommitted put.
+        """
+        committed = self._committed.get(queue, [])
+        start = self._browse_cursor.get(queue, 0)
+        self._browse_cursor[queue] = len(committed)
+        return committed[start:]
 
     def commit(self) -> None:
         for queue, message in self._staged_gets:
