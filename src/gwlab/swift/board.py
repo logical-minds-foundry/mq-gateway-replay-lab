@@ -19,6 +19,17 @@ from typing import Any
 _STATES = ("instructed", "acknowledged", "matched", "settled", "rejected", "failed")
 _IN_FLIGHT = "instructed|acknowledged|matched"
 
+# The exporter's own self-timing gauge (load-sim §9.2): the last cold-scan pass's
+# wall-clock, so the "background noise" of gathering the metrics stays visible.
+_COLLECT_SECONDS = "swift_settlement_collect_seconds"
+# The two ``GW.SEC.*`` audit queues plus the outbound transmission queues, from
+# the lab's IBM MQ Prometheus exporter (the ``ibmmq`` job). The series name is the
+# exporter's; the expr is a literal string in the generated JSON regardless.
+_AUDIT_QUEUE_DEPTH = 'ibmmq_queue_depth{queue=~"GW.SEC.*"}'
+# Disk busy-time fraction per box, from the node exporter — the disk-contention
+# signal under real volume (load-sim §9.2).
+_DISK_IO = "rate(node_disk_io_time_seconds_total[5m])"
+
 
 def _ds(ds_uid: str) -> dict[str, str]:
     return {"type": "prometheus", "uid": ds_uid}
@@ -76,6 +87,28 @@ def _stat(
         },
         "targets": [_target(expr, title, ds_uid)],
     }
+
+
+def _threshold_stat(
+    pid: int,
+    title: str,
+    grid: dict[str, int],
+    expr: str,
+    ds_uid: str,
+    steps: list[dict[str, Any]],
+    *,
+    unit: str = "short",
+) -> dict[str, Any]:
+    """A :func:`_stat` whose value is coloured by absolute thresholds.
+
+    Used for the scan-cost tile: a value approaching the 30s scrape interval
+    (load-sim §9) must read visibly red, so the fixed-colour default is swapped
+    for a threshold ramp.
+    """
+    stat = _stat(pid, title, grid, expr, ds_uid, unit=unit)
+    stat["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
+    stat["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": steps}
+    return stat
 
 
 def _bargauge(
@@ -184,6 +217,59 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         # Lifecycle latencies.
         _timeseries(10, "Lifecycle latency (mean)", _grid(0, 16, 12, 8), [mean_target], ds_uid),
         _timeseries(11, "Lifecycle latency (p95)", _grid(12, 16, 12, 8), [p95_target], ds_uid),
+    ]
+    # Load & IO section (load-sim §9): the cost of gathering the metrics, the
+    # physical audit/transmission backlog, and disk contention on the boxes.
+    load_io_header = (
+        "## Load & IO\n"
+        "The scan cost (our exporter's self-timing), the audit/transmission "
+        "queue backlog, and disk contention under real volume."
+    )
+    # green under target (~3s), amber past it, red as it approaches the 30s scrape.
+    scan_cost_steps: list[dict[str, Any]] = [
+        {"color": "green", "value": None},
+        {"color": "yellow", "value": 3},
+        {"color": "red", "value": 15},
+    ]
+    panels += [
+        _text(12, _grid(0, 24, 24, 2), load_io_header),
+        # Scan cost: the last pass's wall-clock as a threshold-coloured tile, plus
+        # its history as a timeseries (the "background noise" of the metrics).
+        _threshold_stat(
+            13,
+            "Scan cost (last pass)",
+            _grid(0, 26, 6, 6),
+            _COLLECT_SECONDS,
+            ds_uid,
+            scan_cost_steps,
+            unit="s",
+        ),
+        _timeseries(
+            14,
+            "Scan cost (per-pass collect wall-clock)",
+            _grid(6, 26, 18, 6),
+            [_target(_COLLECT_SECONDS, "collect", ds_uid)],
+            ds_uid,
+        ),
+        # Physical backlog: the two audit queues and the outbound transmission
+        # queue, from the lab's IBM MQ exporter.
+        _timeseries(
+            15,
+            "Audit + transmission queue depth",
+            _grid(0, 32, 12, 8),
+            [_target(_AUDIT_QUEUE_DEPTH, "{{queue}}", ds_uid)],
+            ds_uid,
+            unit="short",
+        ),
+        # Disk contention, from the node exporter (busy-time fraction per box).
+        _timeseries(
+            16,
+            "Disk IO utilisation",
+            _grid(12, 32, 12, 8),
+            [_target(_DISK_IO, "{{instance}}", ds_uid)],
+            ds_uid,
+            unit="percentunit",
+        ),
     ]
     return {
         "uid": "gwlab-swift-settlement",
