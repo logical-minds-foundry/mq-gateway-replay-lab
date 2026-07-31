@@ -68,9 +68,15 @@ class TransitionAnomaly:
     reason: str
 
 
-@dataclass(frozen=True)
+@dataclass
 class InstructionState:
-    """The folded lifecycle of one instruction."""
+    """The folded lifecycle of one instruction.
+
+    Mutable so the fold can be advanced **incrementally**, one response at a time
+    (:func:`apply_response`), as well as replayed in a batch (:func:`fold`). Both
+    drivers share the single transition implementation, so the maintained
+    streaming picture and a full re-fold stay behaviourally identical.
+    """
 
     seme: str
     current: State
@@ -96,27 +102,46 @@ def triggers_for(message: SwiftMessage) -> list[State]:
     return asserted
 
 
+def initial_state(instruction: SwiftMessage) -> InstructionState:
+    """The fold's starting point: ``INSTRUCTED`` with the instruction's opening hop.
+
+    Shared by the batch :func:`fold` and the streaming
+    :class:`gwlab.swift.stream.state.SettlementState`, so an incrementally
+    maintained lifecycle begins exactly where a full re-fold would.
+    """
+    seme = instruction.seme or ""
+    hops = [Hop(State.INSTRUCTED, instruction.put_time)]
+    return InstructionState(seme, State.INSTRUCTED, hops, [])
+
+
+def apply_response(state: InstructionState, response: SwiftMessage) -> None:
+    """Advance ``state`` in place by one response — the single transition rule.
+
+    For each state the response asserts (in progressive-rank order): a re-assertion
+    of the current state is a benign no-op; a forward-reachable assertion advances
+    the state and appends a :class:`Hop`; anything else is refused and appended to
+    ``state.anomalies`` as a backward/unreachable :class:`TransitionAnomaly`. This
+    is the one implementation :func:`fold` and the incremental streaming path both
+    drive, so they stay behaviourally identical.
+    """
+    for asserted in sorted(triggers_for(response), key=lambda state_: _RANK[state_]):
+        if asserted == state.current:
+            continue  # re-asserting the current state: a benign no-op
+        if asserted in reference.REACHABILITY[state.current]:
+            state.current = asserted
+            state.hops.append(Hop(asserted, response.put_time))
+            continue
+        reason = (
+            REASON_BACKWARD
+            if reference.REACHABILITY[state.current] and _RANK[asserted] < _RANK[state.current]
+            else REASON_UNREACHABLE
+        )
+        state.anomalies.append(TransitionAnomaly(state.seme, asserted, state.current, reason))
+
+
 def fold(correlated: Correlated) -> InstructionState:
     """Replay an instruction's responses into its current state, hops, anomalies."""
-    instruction = correlated.instruction
-    seme = instruction.seme or ""
-    current = State.INSTRUCTED
-    hops: list[Hop] = [Hop(State.INSTRUCTED, instruction.put_time)]
-    anomalies: list[TransitionAnomaly] = []
-
+    state = initial_state(correlated.instruction)
     for response in correlated.responses:
-        for asserted in sorted(triggers_for(response), key=lambda state: _RANK[state]):
-            if asserted == current:
-                continue  # re-asserting the current state: a benign no-op
-            if asserted in reference.REACHABILITY[current]:
-                current = asserted
-                hops.append(Hop(asserted, response.put_time))
-                continue
-            reason = (
-                REASON_BACKWARD
-                if reference.REACHABILITY[current] and _RANK[asserted] < _RANK[current]
-                else REASON_UNREACHABLE
-            )
-            anomalies.append(TransitionAnomaly(seme, asserted, current, reason))
-
-    return InstructionState(seme, current, hops, anomalies)
+        apply_response(state, response)
+    return state
