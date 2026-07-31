@@ -1,0 +1,59 @@
+---
+# Install the built wheel into an isolated /opt/gwlab on the monitoring probe
+# (epic #65, design §9). This mimics a production install: an installed artifact
+# reached through a stable entry point (/opt/gwlab/bin/gwlab-collector), NOT the
+# source-tree + PYTHONPATH model the v1/v2 exporters still use. The virtualenv is
+# rooted at the install prefix, so its own bin/ exposes the console_scripts entry
+# point directly — no source copy, no PYTHONPATH, no symlink.
+#
+# Parasite rule: touches only /opt/gwlab (+ the staging dir) on the probe; it
+# never mutates the base exporter, its keystores, or the QM.
+
+- name: Create the wheel staging directory on the probe
+  ansible.builtin.file:
+    path: "{{ gw_collector_stage_dir }}"
+    state: directory
+    mode: "0755"
+  become: true
+  delegate_to: "{{ gw_collector_host }}"
+
+- name: Stage the built wheel on the probe
+  ansible.builtin.copy:
+    src: "{{ gw_collector_wheel }}"
+    dest: "{{ gw_collector_stage_dir }}/{{ gw_collector_wheel | basename }}"
+    mode: "0644"
+  become: true
+  delegate_to: "{{ gw_collector_host }}"
+
+# Root the venv at the install prefix and install the wheel into it. The pip
+# module creates the venv (idempotent) and installs the artifact; because the
+# venv IS /opt/gwlab, pip drops the console_scripts entry point straight at
+# /opt/gwlab/bin/gwlab-collector. state=forcereinstall so a rebuilt wheel at the
+# same version replaces the installed one (a local build reuses the version).
+- name: Install the gwlab wheel into the isolated /opt/gwlab venv
+  ansible.builtin.pip:
+    name: "{{ gw_collector_stage_dir }}/{{ gw_collector_wheel | basename }}"
+    virtualenv: "{{ gw_collector_prefix }}"
+    virtualenv_command: "{{ gw_collector_base_python }} -m venv"
+    state: forcereinstall
+  become: true
+  delegate_to: "{{ gw_collector_host }}"
+
+# Declare-and-verify the produced entry point: the install's whole point is that
+# /opt/gwlab/bin/gwlab-collector exists and runs from the installed artifact. A
+# missing entry point is a loud failure, not a silent partial install.
+- name: Verify the installed entry point exists
+  ansible.builtin.stat:
+    path: "{{ gw_collector_bin }}"
+  become: true
+  delegate_to: "{{ gw_collector_host }}"
+  register: gw_collector_bin_stat
+
+- name: Assert the collector entry point was installed and is executable
+  ansible.builtin.assert:
+    that:
+      - gw_collector_bin_stat.stat.exists
+      - gw_collector_bin_stat.stat.executable
+    fail_msg: >-
+      {{ gw_collector_bin }} is missing or not executable after install — the
+      installed-artifact + entry-point end-state (design §9) was not reached.
