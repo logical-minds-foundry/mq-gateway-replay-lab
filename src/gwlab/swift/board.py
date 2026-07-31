@@ -1,11 +1,23 @@
 """Code-generate the v2 SWIFT settlement Grafana board (JSON).
 
 The v2 analog of v1's :mod:`gwlab.dashboard`: it assembles a Grafana dashboard
-model — the same *display* approach as the v1 boards (stat tiles, a hero
-distribution, latency timeseries) rather than the standalone HTML render — whose
-panels query the ``swift_settlement_*`` Prometheus series the exporter
-(:mod:`gwlab.swift.serve_http`) publishes. :mod:`gwlab.swift.deploy_http` upserts
-the returned model into Grafana.
+model — stat tiles, a hero distribution, latency timeseries, and a collector-health
+section — whose panels query the ``swift_settlement_*`` and ``swift_collector_*``
+Prometheus series the streaming collector (:mod:`gwlab.swift.stream.serve_collector`)
+publishes. :mod:`gwlab.swift.deploy_http` upserts the returned model into Grafana.
+
+Design notes:
+
+- The **top KPI row is operational** (volume, replay/attention, anomalies,
+  population, and two collector-health headlines) — it deliberately does *not*
+  repeat the per-state counts, which live in the state-distribution hero, so the
+  tiles and the distribution never duplicate each other.
+- All value queries aggregate away ``instance`` (``max``/``sum``), so a Native-HA
+  failover that swaps the scraped instance never doubles a tile.
+- The old per-pass scan-cost gauge (``swift_settlement_collect_seconds``) is
+  retired; the streaming collector's ``swift_collector_cycle_seconds`` (fold cost,
+  off the scrape path) and ``swift_collector_bootstrap_seconds`` (recovery time)
+  carry the cost story in the collector-health section.
 
 Pure dict-building, no I/O — so it is fully deterministic and unit-tested; the
 network deploy lives in ``deploy_http.py``.
@@ -17,17 +29,26 @@ from typing import Any
 
 # The six lifecycle states, in display order (the funnel + the two negatives).
 _STATES = ("instructed", "acknowledged", "matched", "settled", "rejected", "failed")
-_IN_FLIGHT = "instructed|acknowledged|matched"
 
-# The exporter's own self-timing gauge (load-sim §9.2): the last cold-scan pass's
-# wall-clock, so the "background noise" of gathering the metrics stays visible.
-_COLLECT_SECONDS = "swift_settlement_collect_seconds"
-# The two ``GW.SEC.*`` audit queues plus the outbound transmission queues, from
-# the lab's IBM MQ Prometheus exporter (the ``ibmmq`` job). The series name is the
-# exporter's; the expr is a literal string in the generated JSON regardless.
-_AUDIT_QUEUE_DEPTH = 'ibmmq_queue_depth{queue=~"GW.SEC.*"}'
-# Disk busy-time fraction per box, from the node exporter — the disk-contention
-# signal under real volume (load-sim §9.2).
+# State distribution, deduped across instances (a failover swaps the scraped
+# instance; ``max by (state)`` keeps one value per state either way).
+_STATE_DIST = "max by (state) (swift_settlement_state)"
+_ANOMALY_DIST = "max by (kind) (swift_settlement_anomalies)"
+_TOTAL = "sum(max by (state) (swift_settlement_state))"
+_AGING = "max(swift_settlement_aging)"
+_ANOMALIES_TOTAL = "max(swift_settlement_anomalies_total)"
+_POPULATION = "max(swift_settlement_scanned)"
+
+# Collector-health (the watcher watching itself, §7).
+_BOOTSTRAP = "max(swift_collector_bootstrap_seconds)"
+_BACKLOG = "max(swift_collector_cycle_backlog)"
+_INGEST_RATE = "sum(rate(swift_collector_messages_ingested_total[5m]))"
+_PUBLISH_AGE = "time() - max(swift_collector_last_publish_timestamp_seconds)"
+_CYCLE_P95 = (
+    "histogram_quantile(0.95, sum by (le) (rate(swift_collector_cycle_seconds_bucket[5m])))"
+)
+# Disk busy-time fraction per box, from the node exporter — disk contention under
+# real volume (load-sim §9.2).
 _DISK_IO = "rate(node_disk_io_time_seconds_total[5m])"
 
 
@@ -89,28 +110,6 @@ def _stat(
     }
 
 
-def _threshold_stat(
-    pid: int,
-    title: str,
-    grid: dict[str, int],
-    expr: str,
-    ds_uid: str,
-    steps: list[dict[str, Any]],
-    *,
-    unit: str = "short",
-) -> dict[str, Any]:
-    """A :func:`_stat` whose value is coloured by absolute thresholds.
-
-    Used for the scan-cost tile: a value approaching the 30s scrape interval
-    (load-sim §9) must read visibly red, so the fixed-colour default is swapped
-    for a threshold ramp.
-    """
-    stat = _stat(pid, title, grid, expr, ds_uid, unit=unit)
-    stat["fieldConfig"]["defaults"]["color"] = {"mode": "thresholds"}
-    stat["fieldConfig"]["defaults"]["thresholds"] = {"mode": "absolute", "steps": steps}
-    return stat
-
-
 def _bargauge(
     pid: int, title: str, grid: dict[str, int], expr: str, legend: str, ds_uid: str
 ) -> dict[str, Any]:
@@ -133,7 +132,7 @@ def _bargauge(
 def _compression_var() -> dict[str, Any]:
     """A dashboard variable ``$compression`` so the operator recovers sim-time durations.
 
-    Under a time-compressed run (load-sim §7) the exporter records *real*
+    Under a time-compressed run (load-sim §7) the collector records *real*
     (compressed) durations; multiplying the duration panels by this factor ``C``
     recovers the sim-time latencies. Default ``"1"`` is real time (no transform).
     """
@@ -176,96 +175,82 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
     """
     header = (
         f"# SWIFT settlement lifecycle — {qmgr}\n"
-        "MQ-native audit of MT540–548: instructions folded through the "
-        "settlement state machine, read live off the streaming audit queues."
+        "MQ-native audit of MT540–548: instructions folded through the settlement "
+        "state machine by the streaming collector, maintained incrementally in memory."
     )
-    # KPI tiles, laid out left-to-right across the row (each 4 columns wide).
+    # Operational KPI row — volume + attention + collector health. It does NOT
+    # repeat the per-state counts (those are the distribution hero below), so the
+    # tiles and the distribution never duplicate each other.
     kpis = [
-        ("Settled", 'swift_settlement_state{state="settled"}', "green"),
-        ("In flight", f'sum(swift_settlement_state{{state=~"{_IN_FLIGHT}"}})', "blue"),
-        ("Rejected", 'swift_settlement_state{state="rejected"}', "orange"),
-        ("Failed", 'swift_settlement_state{state="failed"}', "red"),
-        ("Anomalies", "swift_settlement_anomalies_total", "purple"),
-        ("Scanned", "swift_settlement_scanned", "text"),
+        ("Total instructions", _TOTAL, "blue", "short"),
+        ("Aging (replay)", _AGING, "yellow", "short"),
+        ("Anomalies", _ANOMALIES_TOTAL, "purple", "short"),
+        ("Population", _POPULATION, "text", "short"),
+        ("Ingest rate", _INGEST_RATE, "green", "cps"),
+        ("Publish age", _PUBLISH_AGE, "text", "s"),
     ]
+
     # Duration panels are scaled by $compression so the operator recovers sim-time
-    # latencies from the real (compressed) durations the exporter records (§7).
+    # latencies from the real (compressed) durations the collector records (§7).
     mean_target = _target("swift_settlement_hop_mean_seconds * $compression", "{{hop}}", ds_uid)
     p95_target = _target("swift_settlement_hop_p95_seconds * $compression", "{{hop}}", ds_uid)
 
     panels: list[dict[str, Any]] = [_text(1, _grid(0, 0, 24, 3), header)]
-    for index, (title, expr, color) in enumerate(kpis):
-        panels.append(_stat(2 + index, title, _grid(index * 4, 3, 4, 4), expr, ds_uid, color=color))
+    for index, (title, expr, color, unit) in enumerate(kpis):
+        panels.append(
+            _stat(2 + index, title, _grid(index * 4, 3, 4, 4), expr, ds_uid, color=color, unit=unit)
+        )
     panels += [
-        # Hero: the state-distribution funnel, and anomalies by kind beside it.
+        # Hero: the state-distribution funnel (settled dominates at scale), and
+        # anomalies by kind beside it.
         _bargauge(
-            8,
-            "State distribution",
-            _grid(0, 7, 12, 9),
-            "swift_settlement_state",
-            "{{state}}",
-            ds_uid,
+            8, "Settlement state distribution", _grid(0, 7, 12, 9), _STATE_DIST, "{{state}}", ds_uid
         ),
-        _bargauge(
-            9,
-            "Anomalies by kind",
-            _grid(12, 7, 12, 9),
-            "swift_settlement_anomalies",
-            "{{kind}}",
-            ds_uid,
-        ),
-        # Lifecycle latencies.
-        _timeseries(10, "Lifecycle latency (mean)", _grid(0, 16, 12, 8), [mean_target], ds_uid),
-        _timeseries(11, "Lifecycle latency (p95)", _grid(12, 16, 12, 8), [p95_target], ds_uid),
+        _bargauge(9, "Anomalies by kind", _grid(12, 7, 12, 9), _ANOMALY_DIST, "{{kind}}", ds_uid),
+        # Lifecycle latencies — full width and taller so the per-hop legend table fits.
+        _timeseries(10, "Lifecycle latency (mean)", _grid(0, 16, 24, 9), [mean_target], ds_uid),
+        _timeseries(11, "Lifecycle latency (p95)", _grid(0, 25, 24, 9), [p95_target], ds_uid),
     ]
-    # Load & IO section (load-sim §9): the cost of gathering the metrics, the
-    # physical audit/transmission backlog, and disk contention on the boxes.
-    load_io_header = (
-        "## Load & IO\n"
-        "The scan cost (our exporter's self-timing), the audit/transmission "
-        "queue backlog, and disk contention under real volume."
+
+    # Collector-health section — the watcher watching itself (§7). Recovery time,
+    # the fold-cost distribution (off the scrape path), throughput, backlog, and
+    # disk contention under real volume.
+    health_header = (
+        "## Collector health — the watcher watching itself\n"
+        "Recovery (cold-reload) time, the incremental fold cost off the scrape path, "
+        "ingest throughput, sweep backlog, and disk contention under real volume."
     )
-    # green under target (~3s), amber past it, red as it approaches the 30s scrape.
-    scan_cost_steps: list[dict[str, Any]] = [
-        {"color": "green", "value": None},
-        {"color": "yellow", "value": 3},
-        {"color": "red", "value": 15},
-    ]
     panels += [
-        _text(12, _grid(0, 24, 24, 2), load_io_header),
-        # Scan cost: the last pass's wall-clock as a threshold-coloured tile, plus
-        # its history as a timeseries (the "background noise" of the metrics).
-        _threshold_stat(
+        _text(12, _grid(0, 34, 24, 2), health_header),
+        _stat(
             13,
-            "Scan cost (last pass)",
-            _grid(0, 26, 6, 6),
-            _COLLECT_SECONDS,
+            "Recovery time (last cold-reload)",
+            _grid(0, 36, 6, 7),
+            _BOOTSTRAP,
             ds_uid,
-            scan_cost_steps,
             unit="s",
+            color="blue",
         ),
-        _timeseries(
-            14,
-            "Scan cost (per-pass collect wall-clock)",
-            _grid(6, 26, 18, 6),
-            [_target(_COLLECT_SECONDS, "collect", ds_uid)],
-            ds_uid,
-        ),
-        # Physical backlog: the two audit queues and the outbound transmission
-        # queue, from the lab's IBM MQ exporter.
+        _stat(14, "Sweep backlog", _grid(6, 36, 6, 7), _BACKLOG, ds_uid, color="text"),
         _timeseries(
             15,
-            "Audit + transmission queue depth",
-            _grid(0, 32, 12, 8),
-            [_target(_AUDIT_QUEUE_DEPTH, "{{queue}}", ds_uid)],
+            "Fold cycle time (p95, off the scrape path)",
+            _grid(12, 36, 12, 7),
+            [_target(_CYCLE_P95, "cycle p95", ds_uid)],
             ds_uid,
-            unit="short",
         ),
-        # Disk contention, from the node exporter (busy-time fraction per box).
         _timeseries(
             16,
+            "Messages ingested (rate)",
+            _grid(0, 43, 12, 7),
+            [_target(_INGEST_RATE, "ingest/s", ds_uid)],
+            ds_uid,
+            unit="cps",
+        ),
+        _timeseries(
+            17,
             "Disk IO utilisation",
-            _grid(12, 32, 12, 8),
+            _grid(12, 43, 12, 7),
             [_target(_DISK_IO, "{{instance}}", ds_uid)],
             ds_uid,
             unit="percentunit",
