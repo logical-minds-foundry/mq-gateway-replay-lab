@@ -10,10 +10,13 @@ exposition renders it unchanged.
 
 Four design rules from §5 shape it:
 
-- **Incremental == batch.** The lifecycle fold is monotonic along the
-  reachability graph, so re-folding one instruction's small hop-set on each new
-  message yields the same terminal state as folding a full correlated set. Only
-  the *driver* changes; :func:`gwlab.swift.lifecycle.fold` is reused verbatim.
+- **Incremental == batch.** Each SEME's *folded* lifecycle is kept in memory and
+  advanced one message at a time via :func:`gwlab.swift.lifecycle.apply_response`
+  — the very transition rule the batch :func:`gwlab.swift.lifecycle.fold` drives.
+  Applying responses in arrival order through that one shared rule yields the same
+  ``current`` / ``hops`` / ``anomalies`` a full re-fold of the correlated set
+  would, so :meth:`report` reads the cached state directly and never re-folds
+  (the O(state)-per-sweep cost that dominated at scale is gone).
 - **No pending buffer (the correlation invariant).** When a response is browsed,
   its instruction's audit copy is already in state — unless that instruction has
   expired off the queue. So an unmatched response is never *pending*: it is
@@ -38,12 +41,12 @@ a silent failure.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from gwlab.swift import lifecycle, window
 from gwlab.swift.collect import Anomaly, DayReport
-from gwlab.swift.correlate import REASON_ORPHAN, Correlated
+from gwlab.swift.correlate import REASON_ORPHAN
 from gwlab.swift.reference import TERMINAL_NEGATIVE, State
 
 if TYPE_CHECKING:
@@ -60,21 +63,19 @@ _TERMINAL: frozenset[State] = TERMINAL_NEGATIVE | {State.SETTLED}
 
 @dataclass
 class _Entry:
-    """One instruction and the responses folded into its lifecycle.
+    """One instruction and its incrementally folded lifecycle.
 
     An entry is only ever created *from* an instruction, so ``instruction`` is
-    always present (never ``None``) — responses attach to an existing entry or
-    become orphan candidates, they never create one.
+    always present (never ``None``) — responses advance an existing entry's cached
+    ``state`` or become orphan candidates, they never create one. ``state`` is the
+    live fold, maintained in place by :func:`gwlab.swift.lifecycle.apply_response`;
+    ``response_count`` tracks how many responses have been folded in (for the
+    ``scanned`` population gauge) without retaining the messages themselves.
     """
 
     instruction: SwiftMessage
-    responses: list[SwiftMessage] = field(default_factory=list)
-
-
-def _fold(entry: _Entry) -> InstructionState:
-    """Fold one entry's put-time-ordered responses into its current lifecycle."""
-    responses = sorted(entry.responses, key=lambda message: message.put_time)
-    return lifecycle.fold(Correlated(entry.instruction, responses))
+    state: InstructionState
+    response_count: int = 0
 
 
 def _transition_anomalies(state: InstructionState) -> list[Anomaly]:
@@ -100,9 +101,12 @@ class SettlementState:
     def ingest(self, message: SwiftMessage) -> None:
         """Fold one parsed message into the picture (design §5).
 
-        An instruction sets (or refreshes) its SEME's entry; a response attaches
-        to the entry its ``RELA`` names, or — when no such instruction is in
-        state — is held as an orphan candidate for the window-gated check in
+        An instruction initialises (or refreshes) its SEME's entry — creating the
+        cached ``INSTRUCTED`` lifecycle on first sight and draining any responses
+        that arrived ahead of it — while a duplicate audit copy refreshes the
+        instruction without resetting the fold. A response advances the cached
+        lifecycle of the entry its ``RELA`` names, or — when no such instruction is
+        in state — is held as an orphan candidate for the window-gated check in
         :meth:`report`. A SEME-less instruction cannot be keyed or correlated and
         is skipped (the parser/sweep surfaces it as a decode anomaly, not here).
         """
@@ -110,7 +114,13 @@ class SettlementState:
             seme = message.seme
             if seme is None:
                 return
-            self._by_seme.setdefault(seme, _Entry(instruction=message)).instruction = message
+            entry = self._by_seme.get(seme)
+            if entry is None:
+                entry = _Entry(instruction=message, state=lifecycle.initial_state(message))
+                self._by_seme[seme] = entry
+                self._drain_early_responses(seme, entry)
+            else:
+                entry.instruction = message  # duplicate audit copy: keep the fold
             return
 
         rela = message.rela
@@ -121,7 +131,28 @@ class SettlementState:
         if entry is None:
             self._orphan_candidates.append(message)
             return
-        entry.responses.append(message)
+        self._apply(entry, message)
+
+    def _apply(self, entry: _Entry, response: SwiftMessage) -> None:
+        """Advance an entry's cached lifecycle by one response and count it."""
+        lifecycle.apply_response(entry.state, response)
+        entry.response_count += 1
+
+    def _drain_early_responses(self, seme: str, entry: _Entry) -> None:
+        """Fold in any responses that were held before this instruction arrived.
+
+        Rare per the correlation invariant, but when it happens the held responses
+        must land on the now-present entry so the incremental result matches a
+        batch fold of the same set; the rest stay orphan candidates.
+        """
+        held = [message for message in self._orphan_candidates if message.rela == seme]
+        if not held:
+            return
+        self._orphan_candidates = [
+            message for message in self._orphan_candidates if message.rela != seme
+        ]
+        for response in held:
+            self._apply(entry, response)
 
     def record_anomalies(self, anomalies: list[Anomaly]) -> None:
         """Accumulate per-message decode anomalies (malformed / field-violation).
@@ -144,8 +175,7 @@ class SettlementState:
         """
         for seme in list(self._by_seme):
             entry = self._by_seme[seme]
-            state = _fold(entry)
-            if state.current in _TERMINAL and not window.in_window(
+            if entry.state.current in _TERMINAL and not window.in_window(
                 entry.instruction.put_time, now, horizon
             ):
                 del self._by_seme[seme]
@@ -158,8 +188,9 @@ class SettlementState:
     def report(self, now: datetime, horizon: Horizon) -> DayReport:
         """Render the maintained picture into a :class:`DayReport` (the one seam).
 
-        Re-folds each entry, collects transition + window-gated orphan + recorded
-        decode anomalies, and computes the aged-out attention set. ``scanned`` is
+        Reads each entry's **cached** folded lifecycle directly — no re-fold, no
+        re-correlate — and collects transition + window-gated orphan + recorded
+        decode anomalies, then computes the aged-out attention set. ``scanned`` is
         the current in-state message **population** (instructions + folded
         responses + held orphan candidates), not a per-pass browse count — the
         scan-cost gauge is superseded by the §7 self-metrics.
@@ -167,7 +198,7 @@ class SettlementState:
         states: list[InstructionState] = []
         anomalies: list[Anomaly] = []
         for entry in self._by_seme.values():
-            state = _fold(entry)
+            state = entry.state
             anomalies.extend(_transition_anomalies(state))
             states.append(state)
 
@@ -178,7 +209,7 @@ class SettlementState:
 
         anomalies.extend(self._recorded)
         aged_out = [state for state in states if window.is_aged_out(state, now, horizon)]
-        scanned = sum(1 + len(entry.responses) for entry in self._by_seme.values()) + len(
+        scanned = sum(1 + entry.response_count for entry in self._by_seme.values()) + len(
             self._orphan_candidates
         )
         return DayReport(states=states, aged_out=aged_out, anomalies=anomalies, scanned=scanned)

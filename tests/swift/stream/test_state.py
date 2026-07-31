@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from gwlab.swift.collect import Anomaly
+from gwlab.swift.correlate import Correlated
+from gwlab.swift.lifecycle import fold
 from gwlab.swift.model import StatusItem, SwiftMessage
 from gwlab.swift.reference import State
 from gwlab.swift.stream.state import SettlementState
@@ -163,3 +165,108 @@ def test_non_terminal_past_horizon_is_aged_out() -> None:
 
     assert [s.seme for s in report.aged_out] == ["S1"]
     assert report.states[0].current is State.INSTRUCTED
+
+
+# --- correctness gate: incremental (message-at-a-time) == batch fold ---------
+#
+# The whole optimisation rests on one invariant: maintaining each SEME's fold
+# incrementally through :func:`lifecycle.apply_response` must yield exactly what a
+# full :func:`lifecycle.fold` of the same (instruction, responses) set would —
+# same ``current``, same ``hops``, same ``anomalies``. These tests pin that
+# equality across the fold's behaviours so the two drivers can never silently
+# diverge.
+
+
+def _t(minute: int) -> datetime:
+    return _RECENT + timedelta(minutes=minute)
+
+
+def _assert_incremental_equals_batch(
+    instruction: SwiftMessage,
+    responses: list[SwiftMessage],
+) -> None:
+    """Fold one set both ways; assert the streaming cache matches the batch fold."""
+    batch = fold(Correlated(instruction, responses))
+
+    state = SettlementState()
+    state.ingest(instruction)
+    for response in responses:
+        state.ingest(response)
+    [incremental] = state.report(_NOW, _HORIZON).states
+
+    assert incremental.current == batch.current
+    assert incremental.hops == batch.hops
+    assert incremental.anomalies == batch.anomalies
+
+
+def test_incremental_equals_batch_clean_settle() -> None:
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [
+            _status("S1", [("IPRC", "PACK")], _t(1)),
+            _status("S1", [("MTCH", "MACH")], _t(2)),
+            _confirmation("S1", _t(3)),
+        ],
+    )
+
+
+def test_incremental_equals_batch_reject() -> None:
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [_status("S1", [("IPRC", "REJT")], _t(1))],
+    )
+
+
+def test_incremental_equals_batch_fail() -> None:
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [_status("S1", [("IPRC", "PACK")], _t(1)), _status("S1", [("SETT", "PENF")], _t(2))],
+    )
+
+
+def test_incremental_equals_batch_out_of_order_multistatus() -> None:
+    # one message asserting MATCHED before ACKNOWLEDGED must fold identically both
+    # ways (progressive-rank ordering, not field order, drives the advance).
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [_status("S1", [("MTCH", "MACH"), ("IPRC", "PACK")], _t(1))],
+    )
+
+
+def test_incremental_equals_batch_backward_unreachable_anomaly() -> None:
+    # MATCHED asserted after SETTLED is unreachable -> a transition anomaly that
+    # both drivers must record identically.
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [_confirmation("S1", _t(1)), _status("S1", [("MTCH", "MACH")], _t(2))],
+    )
+
+
+def test_incremental_equals_batch_reasserted_noop() -> None:
+    _assert_incremental_equals_batch(
+        _instruction("S1", _t(0)),
+        [_status("S1", [("IPRC", "PACK")], _t(1)), _status("S1", [("IPRC", "PACK")], _t(2))],
+    )
+
+
+def test_incremental_equals_batch_when_responses_precede_instruction() -> None:
+    # rare per the correlation invariant: responses arrive before the instruction.
+    # They are held, then drained onto the entry in arrival order, so the folded
+    # result still matches a batch fold of the same ordered set.
+    instruction = _instruction("S1", _t(0))
+    responses = [
+        _status("S1", [("IPRC", "PACK")], _t(1)),
+        _status("S1", [("MTCH", "MACH")], _t(2)),
+        _confirmation("S1", _t(3)),
+    ]
+    batch = fold(Correlated(instruction, responses))
+
+    state = SettlementState()
+    for response in responses:  # every response before its instruction
+        state.ingest(response)
+    state.ingest(instruction)
+    [incremental] = state.report(_NOW, _HORIZON).states
+
+    assert incremental.current == batch.current
+    assert incremental.hops == batch.hops
+    assert incremental.anomalies == batch.anomalies
