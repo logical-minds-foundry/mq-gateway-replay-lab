@@ -12,13 +12,18 @@ copies would be browsed behind a persistent cursor.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
+import gwlab.swift.stream.sweep as sweep_module
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.messaging import Message
 from gwlab.swift.reference import State
 from gwlab.swift.stream.state import SettlementState
 from gwlab.swift.stream.sweep import sweep
 from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
+
+if TYPE_CHECKING:
+    import pytest
 
 _QUEUES = SwiftQueueSet()
 _HORIZON = Horizon(days=3)
@@ -130,3 +135,78 @@ def test_out_of_window_message_is_counted_but_not_ingested() -> None:
 
     assert result.ingested == 1  # browsed and decoded
     assert state.report(_NOW, _HORIZON).states == []  # but filtered out of the window
+
+
+def test_unbounded_sweep_reports_not_more() -> None:
+    fake = FakeMessaging()
+    state = SettlementState()
+    _seed(fake, _QUEUES.instruct_audit, _instruction("GWSEC0000000050"), _RECENT)
+
+    result = sweep(fake, state, _QUEUES, _NOW, _HORIZON)  # batch defaults to 0
+
+    # An unbounded pass drains everything, so it never signals "more to come".
+    assert result.ingested == 1
+    assert result.more is False
+
+
+def test_batched_sweep_bounds_the_pass_and_drains_across_calls() -> None:
+    fake = FakeMessaging()
+    state = SettlementState()
+    semes = [f"GWSEC00000001{i:02d}" for i in range(5)]
+    for seme in semes:
+        _seed(fake, _QUEUES.instruct_audit, _instruction(seme), _RECENT)
+
+    # batch=2 over 5 instructions: at most `batch` per queue, `more` flags a full
+    # batch (its cursor likely has more), so the caller keeps sweeping.
+    first = sweep(fake, state, _QUEUES, _NOW, _HORIZON, batch=2)
+    assert first.ingested <= 2  # the per-queue cap held
+    assert first.more is True
+
+    second = sweep(fake, state, _QUEUES, _NOW, _HORIZON, batch=2)
+    assert second.ingested <= 2
+    assert second.more is True
+
+    # The final call drains the remainder (a short batch) and signals caught-up.
+    third = sweep(fake, state, _QUEUES, _NOW, _HORIZON, batch=2)
+    assert third.more is False
+
+    # No message dropped and none double-counted: exactly the 5 distinct
+    # instructions folded across the batched calls, each seen once.
+    assert first.ingested + second.ingested + third.ingested == 5
+    report = state.report(_NOW, _HORIZON)
+    assert len(report.states) == 5
+    assert all(s.current is State.INSTRUCTED for s in report.states)
+
+
+def test_batched_sweep_preserves_instruct_before_status_correlation() -> None:
+    fake = FakeMessaging()
+    state = SettlementState()
+    # Instruction and its confirmation both present before the batched drain: the
+    # instruct queue is fully drained before the status queue within one call, so
+    # the confirmation still folds to SETTLED (the correlation invariant, §5).
+    _seed(fake, _QUEUES.instruct_audit, _instruction("GWSEC0000000200"), _RECENT)
+    _seed(fake, _QUEUES.status_audit, _confirmation("GWSEC0000000201", "GWSEC0000000200"), _RECENT)
+
+    result = sweep(fake, state, _QUEUES, _NOW, _HORIZON, batch=10)
+
+    assert result.ingested == 2
+    assert result.more is False
+    assert state.report(_NOW, _HORIZON).states[0].current is State.SETTLED
+
+
+def test_sweep_yields_the_gil_every_yield_every_messages(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The pure-Python fold holds the GIL; sweep hands it off every _YIELD_EVERY
+    # folded messages so the box-only HTTP thread can serve mid-batch (issue #152).
+    yields: list[float] = []
+    monkeypatch.setattr(sweep_module, "_YIELD_EVERY", 2)
+    monkeypatch.setattr(sweep_module.time, "sleep", lambda seconds: yields.append(seconds))
+    fake = FakeMessaging()
+    state = SettlementState()
+    for i in range(4):
+        _seed(fake, _QUEUES.instruct_audit, _instruction(f"GWSEC00000003{i:02d}"), _RECENT)
+
+    result = sweep(fake, state, _QUEUES, _NOW, _HORIZON)
+
+    assert result.ingested == 4
+    # 4 messages, yield every 2 → a cooperative sleep(0) at the 2nd and 4th.
+    assert yields == [0, 0]

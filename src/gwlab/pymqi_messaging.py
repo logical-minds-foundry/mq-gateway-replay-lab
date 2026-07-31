@@ -165,7 +165,7 @@ class PyMqiMessaging:
     def browse(self, queue: str) -> list[Message]:
         return list(self._browse_iter(queue))
 
-    def browse_new(self, queue: str) -> list[Message]:
+    def browse_new(self, queue: str, limit: int = 0) -> list[Message]:
         """Persistent-cursor browse: the first call returns every message from the
         first; each later call returns only messages that arrived since the
         previous call (see the ``Messaging`` protocol).
@@ -177,6 +177,12 @@ class PyMqiMessaging:
         (``MQRC_CONNECTION_BROKEN``) discards the cursor, so the next call re-opens
         at ``BROWSE_FIRST`` — a full re-read, which is the cold-reload recovery
         path (the caller's fold is idempotent under that replay).
+
+        ``limit > 0`` stops after that many ``BROWSE_NEXT``s and returns, leaving
+        the handle parked on the last message browsed so the next call resumes
+        from there — the bounded-batch drain that keeps one sweep from folding a
+        giant delta in a single GIL-holding pass (issue #152). ``limit == 0``
+        drains the whole new delta.
         """
         cursor = self._browse_cursors.get(queue)
         if cursor is None:
@@ -184,6 +190,8 @@ class PyMqiMessaging:
             self._browse_cursors[queue] = cursor
         messages: list[Message] = []
         while True:
+            if limit > 0 and len(messages) >= limit:
+                return messages
             first = self._c.MQGMO_BROWSE_FIRST
             following = self._c.MQGMO_BROWSE_NEXT
             option = following if cursor.started else first

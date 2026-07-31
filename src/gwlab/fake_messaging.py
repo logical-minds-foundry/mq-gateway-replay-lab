@@ -68,19 +68,25 @@ class FakeMessaging:
     def browse(self, queue: str) -> list[Message]:
         return list(self._committed.get(queue, []))
 
-    def browse_new(self, queue: str) -> list[Message]:
+    def browse_new(self, queue: str, limit: int = 0) -> list[Message]:
         """Persistent-cursor browse (see the ``Messaging`` protocol).
 
         A per-queue high-water index models the live adapter's parked browse
         cursor: the first call returns every committed message, each later call
         only those committed since — never re-reading a message. Uncommitted
         staged puts are invisible (they are not yet on the queue), exactly as a
-        live browse would not see an in-flight, uncommitted put.
+        live browse would not see an in-flight, uncommitted put. ``limit > 0``
+        caps the call at that many new messages and advances the cursor only past
+        those returned, so the next call continues from there (the bounded-batch
+        drain of issue #152); ``limit == 0`` returns the whole new delta.
         """
         committed = self._committed.get(queue, [])
         start = self._browse_cursor.get(queue, 0)
-        self._browse_cursor[queue] = len(committed)
-        return committed[start:]
+        end = len(committed)
+        if limit > 0:
+            end = min(end, start + limit)
+        self._browse_cursor[queue] = end
+        return committed[start:end]
 
     def commit(self) -> None:
         for queue, message in self._staged_gets:
