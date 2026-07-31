@@ -145,12 +145,20 @@ Operational/measurement task — no TDD. De-risks design §11.1–§11.2.
   `browse` a `GW.SEC.*.AUDIT` queue; confirm depth read (the same probe pattern used
   in the #123 experiment, now via the monitoring identity/CCDT).
 
-- [ ] **Step 3: Measure the first-lap time at multi-day depth.** Load ~250k messages
+- [ ] **Step 3: Validate persistent-cursor semantics on live iron (design §11.3).**
+  On the live QM, confirm as documented evidence: (a) a parked `BROWSE_NEXT` handle
+  returns only new arrivals across sweeps (exactly-once, no duplicates); (b) a
+  `CAPEXPRY`-expiring message under a parked cursor does **not** break `BROWSE_NEXT`
+  (the QM reaps it, the cursor continues, no error); (c) a forced client reconnect
+  re-opens at `BROWSE_FIRST` (= the cold-reload). This proves *early* — before the
+  ingest core is built on it — the exactly-once cursor assumption T3–T5 rest on.
+
+- [ ] **Step 4: Measure the first-lap time at multi-day depth.** Load ~250k messages
   (the multi-day retention target) and time one full sweep from empty; record msg/s
   and total. Compare against the 30 s scrape *only for context* — the scrape is
   decoupled, so the number that matters is recovery time.
 
-- [ ] **Step 4: Record the decision.** Write the measurement + the bindings
+- [ ] **Step 5: Record the decision.** Write the measurement + the bindings
   escape-hatch call (accept client-mode / escalate to bindings) to the asset file;
   commit as `docs(collector): first-lap measurement + escape-hatch decision`.
 
@@ -239,9 +247,14 @@ class FakeMessaging:
   `window.in_window/_real_horizon`, `swiftconfig.Horizon`, `reference.State`.
 - Produces: `SettlementState` with
   `ingest(message: SwiftMessage) -> None`,
+  `record_anomalies(anomalies: list[Anomaly]) -> None` (per-message decode
+  anomalies — `malformed` / `field-violation` — accumulated for the report),
   `age(now: datetime, horizon: Horizon) -> None`,
-  `report(now, horizon) -> collect.DayReport` (so `observe.metrics` renders it
-  unchanged). Internally keyed `dict[str (seme) → _Entry]` where
+  `report(now, horizon) -> collect.DayReport` — the **single state→metrics seam**,
+  so `observe.metrics` renders it unchanged. `DayReport.scanned` holds the current
+  in-state message **population** (not a per-pass browse count — the scan-cost gauge
+  is superseded by the §7 self-metrics; design §7). Internally keyed
+  `dict[str (seme) → _Entry]` where
   `_Entry = {instruction: SwiftMessage | None, responses: list[SwiftMessage]}`.
 
 - [ ] **Step 1: Write the failing test — instruction then responses fold to SETTLED:**
@@ -340,10 +353,18 @@ Implement `age`: for each entry, fold; if `current` is terminal
 (`SETTLED/REJECTED/FAILED`) AND `not in_window(instruction.put_time, now, horizon)`
 → delete the entry; otherwise keep.
 
-- [ ] **Step 7: Run all state tests green; REFACTOR.** Extract the fold-per-entry
+- [ ] **Step 7: RED — recorded decode anomalies surface in the report (four-kind
+  parity).** Test: `st.record_anomalies([Anomaly("malformed","x","bad body")])`,
+  then `st.report(now, Horizon(days=3)).anomalies` includes it, alongside any
+  `orphan` / `transition`. Implement `record_anomalies` to accumulate into the list
+  `report` returns — so the streaming state carries the same four-kind unified
+  channel as the batch collector (design §5). The sweep supplies these from
+  `_decode_and_parse` (T5).
+
+- [ ] **Step 8: Run all state tests green; REFACTOR.** Extract the fold-per-entry
   helper shared by `report` and `age`; ensure no duplicated fold logic.
 
-- [ ] **Step 8: Commit.**
+- [ ] **Step 9: Commit.**
 
 ---
 
@@ -401,7 +422,10 @@ def sweep(messaging, state, queues, now, horizon):
 - [ ] **Step 5: RED — a second sweep folds only new arrivals** (no re-read, no
   double-count): seed instruct on sweep 1, seed a status arrival, sweep 2, assert
   `ingested == 1` on sweep 2 and the lifecycle advances. Verifies the continuous
-  cursor semantics end-to-end through the fake.
+  cursor semantics end-to-end through the fake. Also assert a **malformed** body in
+  the stream becomes a counted `malformed` anomaly (via `_decode_and_parse` →
+  `state.record_anomalies`) and does **not** abort the sweep — four-kind parity
+  end-to-end.
 
 - [ ] **Step 6: Run green; commit.**
 
@@ -492,7 +516,9 @@ def run(args):
         t0 = time.monotonic(); now = datetime.now(UTC)
         result = sweep(messaging, state, args.queues, now, args.horizon)
         stats.observe(cycle_seconds=time.monotonic()-t0, ingested=result.ingested)
-        holder.publish(render_exposition(state.metrics(now)) + render_collector_metrics(stats))
+        report = state.report(now, args.horizon)   # the single state->metrics seam
+        holder.publish(render_exposition(observe.metrics(report, now))
+                       + render_collector_metrics(stats))
         time.sleep(args.poll_seconds)
 ```
 

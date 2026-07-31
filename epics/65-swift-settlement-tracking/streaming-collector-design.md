@@ -201,6 +201,13 @@ YAGNI added later with evidence.
   confirmation self-describes "settled" via its MT + `RELA` — is a deferred
   enhancement, §13.)
 
+- **Anomaly parity — all four kinds.** The streaming state surfaces the *same*
+  unified anomaly channel as the batch collector: `malformed` and
+  `field-violation` from per-message decode (`collect._decode_and_parse`),
+  `orphan` (window-gated, above), and `transition` (from the fold). No kind is
+  dropped in the streaming path — a malformed body is a counted anomaly that never
+  aborts the sweep, exactly as in the batch collector (no silent failures).
+
 - **Aging** runs on a timer against a **central config window** (the same config
   that derives the queue names), set identical to the queues' `CAPEXPRY` — no need
   to inquire the QM. The existing `Horizon` models it.
@@ -258,6 +265,13 @@ metrics, extending the `swift_settlement_collect_seconds` seed (#121):
   for whether the single-threaded loop is keeping up.
 - `swift_collector_last_publish_timestamp_seconds` — so a stalled or
   mid-bootstrap collector is visible as snapshot staleness rather than silence.
+
+These self-metrics **supersede the batch collector's per-pass scan-cost gauge**
+(`swift_settlement_scanned` / `swift_settlement_collect_seconds`), which has no
+per-scrape meaning once the fold is decoupled from the scrape: `cycle_seconds` is
+the fold cost and `messages_ingested_total` the throughput. The settlement
+exposition therefore reports the current in-state **population**, not a per-pass
+browse count — a one-time meaning change to note at the board cutover (T8).
 
 ---
 
