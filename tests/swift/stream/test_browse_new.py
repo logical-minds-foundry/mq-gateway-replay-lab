@@ -54,3 +54,21 @@ def test_browse_new_cursor_is_per_queue() -> None:
     # B's cursor is independent — advancing A did not move it.
     assert [m.body for m in fake.browse_new("B")] == [b"b1"]
     assert fake.browse_new("A") == []
+
+
+def test_browse_new_limit_bounds_the_batch_and_the_cursor_continues() -> None:
+    fake = FakeMessaging()
+    _arrive(fake, "Q", b"a", b"b", b"c", b"d", b"e")
+
+    # A bounded call returns at most `limit` new messages and advances the cursor
+    # only past those — the next call resumes exactly where this one stopped.
+    assert [m.body for m in fake.browse_new("Q", limit=2)] == [b"a", b"b"]
+    assert [m.body for m in fake.browse_new("Q", limit=2)] == [b"c", b"d"]
+
+    # A final short batch (fewer than `limit` remain) drains the rest, then empty.
+    assert [m.body for m in fake.browse_new("Q", limit=2)] == [b"e"]
+    assert fake.browse_new("Q", limit=2) == []
+
+    # limit larger than the delta behaves like an unbounded drain.
+    _arrive(fake, "Q", b"f", b"g")
+    assert [m.body for m in fake.browse_new("Q", limit=100)] == [b"f", b"g"]

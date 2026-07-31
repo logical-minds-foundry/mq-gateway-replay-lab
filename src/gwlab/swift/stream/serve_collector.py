@@ -107,6 +107,13 @@ def run(args: argparse.Namespace) -> None:
     ``state -> metrics`` seam, render the settlement + collector expositions, and
     publish. The first lap is the cold rebuild; every later lap folds only new
     arrivals behind the persistent cursors.
+
+    Each sweep is bounded to ``--batch-size`` messages per queue and the snapshot
+    is published after **every** sweep, so a large reload populates the board
+    progressively and the box-only HTTP thread gets a fresh GIL window each pass
+    (issue #152). Only when the sweep reports it has caught up (``more`` is
+    ``False``) does the loop pause for ``--poll-seconds``; while a big delta is
+    still draining it keeps sweeping and publishing without pausing.
     """
     messaging = connect(args)
     queues = SwiftQueueSet()
@@ -116,7 +123,7 @@ def run(args: argparse.Namespace) -> None:
     while True:
         t0 = time.monotonic()
         now = datetime.now(UTC)
-        result = sweep(messaging, state, queues, now, horizon)
+        result = sweep(messaging, state, queues, now, horizon, batch=args.batch_size)
         stats.observe(
             cycle_seconds=time.monotonic() - t0,
             ingested=result.ingested,
@@ -126,7 +133,8 @@ def run(args: argparse.Namespace) -> None:
         holder.publish(
             render_exposition(observe.metrics(report, now)) + render_collector_metrics(stats)
         )
-        time.sleep(args.poll_seconds)
+        if not result.more:
+            time.sleep(args.poll_seconds)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -141,10 +149,16 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--cert-label", help="client certificate label to present")
     parser.add_argument("--horizon", type=int, default=3, help="settlement window, business days")
     parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=20000,
+        help="max messages folded per queue per sweep; publishes between batches (issue #152)",
+    )
+    parser.add_argument(
         "--poll-seconds",
         type=float,
         default=5.0,
-        help="loop-level sleep between full sweeps (the collector's own cadence)",
+        help="loop-level sleep between sweeps once caught up (the collector's own cadence)",
     )
     run(parser.parse_args(argv))
 
