@@ -225,6 +225,47 @@ repo's* Ansible, layered on top of the base lab. Rebuild the base lab, re-run ou
 gateway-lab automation, and our service returns. The base lab neither knows nor
 cares that a service was added.
 
+### 8.1 Service supervision & crash-restart
+
+The collector cannot be run as a bare process. Like the lab's `MQ.EVENT.MONITOR`
+service (the `amqsevt` wrapper), it needs a **supervision wrapper** so that a crash
+is surfaced and the service restarted. We mirror that proven pattern, with one
+constraint removed.
+
+**Carried over from the event-monitor wrapper:**
+
+- The `SERVICE` (`CONTROL(QMGR)`, `SERVTYPE(SERVER)`) launches a **supervision
+  wrapper** (`setsid -w -- /opt/gwlab/bin/gwlab-collector-run …`), stopped by a
+  process-group SIGTERM (`STOPCMD /bin/kill -TERM -- -<pgid>`).
+- **Clean-stop vs. crash falls out of the mechanism — no in-script signal trap.**
+  The wrapper is a `while true` loop that re-launches the collector. A clean stop's
+  group-SIGTERM hits the wrapper too and it terminates on the default disposition,
+  so the loop never runs again — no orphan. A collector crash exits only the worker;
+  the wrapper is still alive, so it logs, sleeps, and restarts (→ cold-reload).
+- **Crash-loop bound + fail-loud.** A run lasting ≥ a healthy threshold resets the
+  failure burst; repeated *fast* failures past a bound make the wrapper exit
+  non-zero so the `SERVICE` goes **DOWN visibly** (alertable) rather than looping
+  forever silently. Failure at the boundary must be loud, never swallowed.
+
+**Removed — does NOT apply here.** The event monitor opens its event queue for
+**exclusive** input (`DEFSOPT(EXCL)`), so its wrapper must ride out the QM's
+consistent ~29 s dead-handle reap on restart — the deliberate
+fail-twice-then-succeed 2042 pattern. Our collector consumes by **non-destructive
+browse**; the audit queues are **shared by design** (other applications — and our
+own collector and metrics — browse them concurrently, which is the whole point of an
+audit copy). So there is **no exclusive-input constraint and no reap race**. Our
+only fast-fail case is a genuine crash-loop (bad config, QM unavailable), handled by
+the bound above.
+
+**Alerting / observability.** The fail-loud `SERVICE`-DOWN state, plus the
+self-metrics (§7 — a climbing `bootstrap` count and a stale
+`last_publish_timestamp`), are the crash signals. Folding richer service-health
+signals into the observability layer is a noted follow-on.
+
+**Aspiration.** This *cold-reload + incremental-maintain + supervised-restart*
+pattern is intended to double as a **reference recovery design for a production MQ
+gateway** — one of the motivations for building it here, not just a lab convenience.
+
 ---
 
 ## 9. Packaging & install — mimic the production end-state
@@ -305,8 +346,10 @@ lever that turns a multi-minute recovery into a short one.
 - **T5 — snapshot + HTTP responder thread.** Atomic snapshot swap; separate
   serving thread; the settlement metrics served from maintained state.
 - **T6 — self-observability metrics** (§7).
-- **T7 — the `SERVICE` object + Ansible deployment** across Native-HA nodes;
-  follows-failover behaviour.
+- **T7 — the `SERVICE` object + supervision wrapper + Ansible deployment** across
+  Native-HA nodes. The `CONTROL(QMGR)` `SERVICE` launches a supervision wrapper
+  (§8.1: `while true` restart loop, clean-stop-vs-crash by process-group SIGTERM,
+  crash-loop bound that fails loud); follows-failover behaviour.
 - **T8 — validation.** Live cutover from the batch exporter; confirm scrape cost is
   flat, steady-state cycle time is small, and a forced failover recovers within the
   published bootstrap time.
