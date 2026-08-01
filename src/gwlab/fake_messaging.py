@@ -8,21 +8,13 @@ be exercised without a live box.
 
 from __future__ import annotations
 
-from collections import namedtuple
 from typing import TYPE_CHECKING
-
-from gwlab.messaging import Message
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from datetime import datetime
 
-    from gwlab.messaging import ReportOpts
-
-#: A record of one ``put`` call, kept so tests can assert what the gateway logic
-#: requested — the target ``queue``, the ``message``, and any ``report_opts``
-#: (the COA/COD request bits) attached to it.
-PutRecord = namedtuple("PutRecord", "queue message report_opts")
+    from gwlab.messaging import Message
 
 
 class FakeMessaging:
@@ -41,7 +33,6 @@ class FakeMessaging:
         self._clock = clock
         self._next_msgid = 0
         self._browse_cursor: dict[str, int] = {}
-        self.puts: list[PutRecord] = []
 
     def configure_stream(self, source: str, target: str) -> None:
         """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
@@ -52,7 +43,7 @@ class FakeMessaging:
         """
         self._streams[source] = target
 
-    def put(self, queue: str, message: Message, *, report_opts: ReportOpts | None = None) -> None:
+    def put(self, queue: str, message: Message) -> None:
         if not message.msg_id:
             # Mirror the queue manager minting a globally-unique MsgId (the live
             # path uses MQPMO_NEW_MSG_ID); a synthetic-but-unique id, never zero.
@@ -60,11 +51,6 @@ class FakeMessaging:
             message.msg_id = b"FAKE" + self._next_msgid.to_bytes(20, "big")
         if self._clock is not None and message.put_time is None:
             message.put_time = self._clock()
-        # Record the request (with any COA/COD report options) for test inspection;
-        # the offline fake has no queue manager to emit the reports, so the options
-        # are captured rather than acted on (spec §10 drives reports via
-        # ``enqueue_report`` instead).
-        self.puts.append(PutRecord(queue, message, report_opts))
         self._staged_puts.append((queue, message))
         target = self._streams.get(queue)
         if target is not None:
@@ -118,20 +104,3 @@ class FakeMessaging:
         removed = len(self._committed.get(queue, []))
         self._committed[queue] = []
         return removed
-
-    def enqueue_report(
-        self, queue: str, correl_id: bytes, feedback: int, put_time: datetime
-    ) -> Message:
-        """Land a body-less COA/COD report on ``queue``, served over ``browse_new``.
-
-        Models the counterparty queue manager returning a report (spec §10): a
-        message with an empty body, ``correl_id`` set to the instruction's MsgId
-        (``MQRO_COPY_MSG_ID_TO_CORREL_ID``), the ``feedback`` code that names the
-        milestone (``MQFB_COA``/``MQFB_COD``), and a controllable ``put_time``. It
-        is placed directly on the committed queue — a report arrives already on the
-        queue, not through the app's unit of work — so the next ``browse_new`` (or
-        ``browse``) sees it. Returns the enqueued message for convenience.
-        """
-        message = Message(body=b"", correl_id=correl_id, feedback=feedback, put_time=put_time)
-        self._committed.setdefault(queue, []).append(message)
-        return message

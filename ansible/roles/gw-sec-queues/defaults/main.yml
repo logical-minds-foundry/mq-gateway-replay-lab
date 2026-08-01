@@ -19,16 +19,6 @@ q_instruct_remote: "GW.SEC.INSTRUCT.REMOTE"
 q_reply: "GW.SEC.REPLY"
 q_status_audit: "GW.SEC.STATUS.AUDIT"
 
-# GW.SEC.REPORT is the terminal COA/COD report ledger (epic #105, spec §5): the
-# return address SVCQM sends plain COA/COD transport-milestone reports to. It is
-# a queue WE own — one new QLOCAL — kept deliberately OUT of the audit queues
-# (which stay pure application traffic) and OUT of gw_sec_streams: nothing
-# forwards the reports, so the queue is itself the retained ledger and the
-# streaming collector's third browse source. CAPEXPRY-capped to the SAME
-# multi-day horizon as the SEC audit queues, because a report reconstructs part
-# of each instruction's timeline over its whole settlement life.
-q_report: "GW.SEC.REPORT"
-
 # The remote object model (issue #56): the app puts to the QALIAS q_instruct,
 # which resolves transparently to q_instruct_audit (the retained-original
 # outbound copy). q_instruct_audit STREAMQ's a MUSTDUP duplicate to
