@@ -2,14 +2,23 @@
 
 **Epic:** #105 (repurposed to a strategic-risk documentation epic) · **Issue:** #180
 **Status:** living register. Originally written from docs/research; **now updated
-with measured evidence from an authorized browse-only lab run** (issue #108,
-2026-08-01 — one probe put through `GW.SEC.INSTRUCT`, retained original on
-`GW.SEC.INSTRUCT.AUDIT` diffed against the streamed copy `SVCQM` received, matched
-by `MsgId`). **Headline: exactly one MQMD field differs on the streamed copy —
-`Expiry` — and favourably (→ `MQEI_UNLIMITED`).** The MQMD-diff risks below (R2,
-R3, R8, and the single-message part of R4) are resolved by that run; R1 is
+with measured evidence from two authorized browse-only lab runs** (both
+2026-08-01). **Run 1 (issue #108)** — one probe put through `GW.SEC.INSTRUCT`,
+retained original on `GW.SEC.INSTRUCT.AUDIT` diffed against the streamed copy
+`SVCQM` received, matched by `MsgId`; **headline: exactly one MQMD field differs
+on the streamed copy — `Expiry` — and favourably (→ `MQEI_UNLIMITED`).** **Run 2
+(issue #187)** — pymqi client over mutual TLS from the app-client, `amqsbcg` on
+both queues — exercised the three cases run 1 could not: **report options**
+(`MQRO_COA | MQRO_COD` → R6), a **grouped MQMD v2 message** (R4), and an **MQRFH2
+named property** (R5). It measured **report options stripped** (only a local COA
+from our own QM; zero reports at `SVCQM` — the capstone streaming-strip proof) and
+**grouping and the inline property preserved byte-identically**. The MQMD-diff
+risks below (R2, R3, R8, R4, R5) are now resolved; R6 is confirmed **live**; R1 is
 confirmed benign under the standing invariant (no `CAPEXPRY` on the stream
-target). See Deliverable B §1.4 for the measured diff.
+target). **Net finding: streaming preserves the entire MQMD/message except
+`Expiry` (favourable) and report options (stripped) — confirmed across scalar
+fields, grouping, and properties.** See Deliverable B §1.4 (scalar diff) and §1.5
+(report/group/property experiments) for the measured detail.
 
 ## Purpose
 
@@ -134,46 +143,54 @@ finding.
 
 ## R4 — Message groups / segmentation fields under `STREAMQ`
 
-- **Severity:** Med · **Status:** **Partial** (single-message measured identical;
-  grouped case documented-only) · **Source:** Deliverable B §1.4, §3 rows 25–29, §4 #5.
+- **Severity:** Med · **Status:** **Confirmed preserved** (grouped message measured
+  byte-identical; explicit segmentation still open) · **Source:** Deliverable B §1.4, §1.5,
+  §3 rows 25–29, §4 #5.
 - **Description.** The grouping/segmentation block — `GroupId`, `MsgSeqNumber`, `Offset`,
   `MsgFlags`, `OriginalLength` — falls under "all descriptor fields duplicated," but the docs
   give no `STREAMQ`-specific statement. Streaming operates per *physical* message, so a
   logical group's integrity across the copy needed measurement.
-- **Measured (issue #108) — single-message case identical.** For the single-message probe,
-  `GroupId`, `MsgSeqNumber`, `Offset`, and `MsgFlags` measured **identical** on the copy, and
-  the instruction was **not** accidentally segmented. The **grouped/segmented-message case
-  remains documentation-only** — the probe did not exercise a multi-message group.
-- **What remains.** If SWIFT ever uses grouped or segmented messages, re-run the diff over a
-  genuine multi-message group; these fields are **essential** there, because a broken
-  `GroupId` or sequence reassembles the group wrongly (or not at all) at the counterparty.
-  Low probability, high consequence where it applies.
+- **Measured (issue #187) — grouped message identical.** A genuine MQMD v2 group member
+  (`GroupId = 0xAA×24`, `MsgSeqNumber = 7`, `MsgFlags = MQMF_MSG_IN_GROUP (8)`) was put through
+  the gateway; the streamed copy on `SVCQM` showed **`GroupId = X'AAAA…AA'` (24 bytes),
+  `MsgSeqNumber = 7`, `MsgFlags = 8` — byte-identical**. Streaming preserves the grouping block
+  for a real group member, not merely for the single-message case (issue #108).
+- **What remains.** Only **explicit multi-segment segmentation** (as distinct from grouping) is
+  unexercised. If SWIFT ever uses segmented messages, re-run the diff over a segmented message;
+  the grouping case is now measured — a broken `GroupId`/sequence would reassemble the group
+  wrongly at the counterparty, and it does not.
 
 ## R5 — MQRFH2 named message-property survival to the counterparty
 
-- **Severity:** Med · **Status:** To-validate · **Source:** Deliverable B §3 (properties row), §6.
+- **Severity:** Med · **Status:** **Confirmed preserved** (inline-RFH2 property measured intact;
+  message-handle / `PROPCTL`-separated case still open) · **Source:** Deliverable B §1.5, §3
+  (properties row), §6.
 - **Description.** The feature author lists **Message Properties** among the fields identical
   between original and streamed copy, so the default expectation is that RFH2 / handle-based
   properties survive streaming. This is a **distinct** guarantee from MQMD fidelity: whether
   properties reach the counterparty as an **inline MQRFH2 in the body** or as **message-handle
   properties** depends on `PROPCTL` on the queues and channel along the path, and `PROPCTL` can
   reshape how properties appear **independently of streaming**.
-- **What to test.** Only if **SWIFT uses named properties** (selectors, routing keys, business
-  metadata outside the MT body): extend the lab diff to dump properties (`amqsbcg` renders an
-  inline RFH2; use a property-aware browser or `PROPCTL(FORCE)` for handle properties), and diff
-  original vs. landing-queue copy. Verify `PROPCTL` on `GW.SEC.INSTRUCT.AUDIT`, the xmit path,
-  and the SVCQM landing queue (declare-and-verify the ones we do not own). If SWIFT uses no named
-  properties, this reduces to confirming the MT body is byte-identical (already covered by
-  app-data fidelity).
+- **Measured (issue #187) — inline property preserved.** A message with an MQRFH2
+  `<usr><SwiftSettleRef>ABC123XYZ</SwiftSettleRef></usr>` folder (`Format = MQFMT_RF_HEADER_2`)
+  was put through the gateway; the streamed copy on `SVCQM` carried `Format = 'MQHRF2'` and the
+  `<usr>…SwiftSettleRef…</usr>` folder **intact in the body**. For the **inline-RFH2** case, a
+  named property survives streaming.
+- **What remains.** The property here rides **as RFH2 in the message data**; the
+  **message-handle / `PROPCTL`-separated** representation was **not** separately tested. If SWIFT
+  carries properties as message handles, re-run with a property-aware browser (or `PROPCTL(FORCE)`)
+  and verify `PROPCTL` on `GW.SEC.INSTRUCT.AUDIT`, the xmit path, and the SVCQM landing queue
+  (declare-and-verify the ones we do not own) — because a channel `PROPCTL` can reshape how the
+  property appears independently of streaming.
 - **Why it matters.** A property that is "identical" as streamed can still look different to the
   counterparty after a channel applies `PROPCTL` — silently changing selector/routing behaviour
-  on values the application set.
+  on values the application set. The inline case is measured safe; the handle case is the residual.
 
 ## R6 — COA/COD report options stripped from the streamed copy
 
-- **Severity:** High (for the COA/COD transport-telemetry feature) · **Status:** Confirmed (by docs;
-  live confirmation pending) · **Source:** Deliverable A (headline finding); IBM *Streaming queues
-  configuration*; Deliverable B §3 row 3, §4 #4.
+- **Severity:** High (for the COA/COD transport-telemetry feature) · **Status:** **Confirmed (live,
+  issue #187)** — was docs-only, now measured · **Source:** Deliverable A (headline finding); IBM
+  *Streaming queues configuration*; Deliverable B §1.5, §3 row 3, §4 #4.
 - **Description.** IBM MQ **strips** the report options (Activity, Expiration, Exception, **COA**,
   **COD**) from the streamed copy: *"If any of the following report options are set on the original
   message, they are not enabled on the streamed message."* The retained original keeps its
@@ -182,14 +199,23 @@ finding.
   (SVCQM COD) milestones the original telemetry design wanted **are not produced by this topology**.
   This is the finding that ended the original COA/COD-on-the-streamed-put idea; it is recorded here
   as a **design risk of the streaming mechanism itself**, not merely a feature footnote.
-- **What to test.** The live experiment in Deliverable A Track 2 (still pending an authorized run):
-  put **one** instruction with `request_reports` enabled and browse `GW.SEC.REPORT`; expect **only**
-  a single local COA (our QM, ~t0, a `SENT`-adjacent local artifact) and **neither** the SVCQM
-  `ARRIVED` COA nor the `DELIVERED` COD. Discriminate origin by generating QM and put-time.
+- **Measured (issue #187) — CONFIRMED live.** One instruction was put through the `GW.SEC.INSTRUCT`
+  QALIAS with `Report = MQRO_COA | MQRO_COD`, `ReplyToQ = GW.SEC.PROBE.REPORT`,
+  `ReplyToQMgr = NHAUAPP`. Result: **exactly ONE report** arrived — `MsgType = 4` (`MQMT_REPORT`),
+  **`Feedback = 259` (`MQFB_COA`)**, `CorrelId` = the original instruction's `MsgId`, and
+  **`PutApplName = 'NHAUAPP'` — generated by our own queue manager** (≈ send time). The streamed
+  copy **did reach SVCQM** (its landing-queue depth incremented), but **SVCQM generated ZERO
+  reports** — the report-landing queue stayed at depth 1, with **no** SVCQM `ARRIVED`-COA and
+  **no** SVCQM `DELIVERED`-COD. This is the direct empirical proof that streaming strips the report
+  options: the only report is a **useless local COA** from our own QM. In production the `ReplyToQ`
+  is the app's **business-reply** queue `GW.SEC.REPLY` (R7), so that stray local COA would land in
+  the business-response stream.
+- **What remains.** Nothing to re-test for the strip itself — it is measured. If `ARRIVED`/`DELIVERED`
+  are still wanted, the report request must ride a message path that is **not** the streamed copy.
 - **Why it matters.** Any design that assumes "the wire message will trigger a COA/COD at the
-  counterparty" is wrong under streaming. If `ARRIVED`/`DELIVERED` are still wanted, the report
-  request must ride a message path that is **not** the streamed copy — a different architecture
-  than the single-put-through-the-QALIAS, needing its own spec change.
+  counterparty" is wrong under streaming — **measured wrong**. If `ARRIVED`/`DELIVERED` are still
+  wanted, that needs a different architecture than the single-put-through-the-QALIAS, with its own
+  spec change.
 
 ## R7 — The single MQMD `ReplyToQ` is committed to SWIFT response routing
 
@@ -202,9 +228,13 @@ finding.
 - **What to test.** Confirm on the lab diff that the copy's `ReplyToQ`/`ReplyToQMgr` carry the values
   the business (MT548) reply path expects and resolve to our QM. (No separate report reply can share
   the field.)
-- **Measured (issue #108).** The copy's `ReplyToQ`/`ReplyToQMgr` measured **identical** to the
+- **Measured (issue #108 + #187).** The copy's `ReplyToQ`/`ReplyToQMgr` measured **identical** to the
   original, with `ReplyToQMgr = NHAUAPP` (our QM) — the single reply slot carries the business reply
-  address intact, reinforcing that it cannot also carry a separate report address.
+  address intact, reinforcing that it cannot also carry a separate report address. The R6 report probe
+  (issue #187) further **demonstrated the collision live**: the one local COA that streaming does
+  produce landed on the `ReplyToQ` — in production that address is the business-reply queue
+  `GW.SEC.REPLY`, so any report necessarily lands in the business-response stream, not a dedicated
+  report queue.
 - **Why it matters.** It bounds the design: any report/telemetry return path must be provisioned as a
   separately-owned queue with its own routing, because the one MQMD reply slot is already spent on
   SWIFT responses. Overloading it would break business reply routing.
@@ -264,13 +294,17 @@ finding.
 
 ## The unifying validation
 
-> **Executed (issue #108, 2026-08-01).** This experiment was run browse-only against
-> the shared lab. Result: exactly one MQMD field differs on the streamed copy —
+> **Executed in two runs (both 2026-08-01), browse-only against the shared lab.**
+> **Run 1 (issue #108):** exactly one MQMD field differs on the streamed copy —
 > `Expiry` (→ `MQEI_UNLIMITED`, favourable); R2, R3, R8, and the single-message part
-> of R4 resolved, R10/R9 observed consistent. The grouped-message case (R4), message
-> properties (R5), and the COA/COD report experiment (R6, still standing on docs) were
-> not exercised by this single-message probe. The procedure below is the method of
-> record.
+> of R4 resolved, R10/R9 observed consistent. **Run 2 (issue #187), via a pymqi
+> client over mutual TLS from the app-client:** the **grouped-message** case (R4,
+> byte-identical), the **inline MQRFH2 property** case (R5, preserved), and the
+> **COA/COD report** experiment (R6) — the last measuring **report options stripped**
+> (only a local COA from our own QM; zero reports at `SVCQM`). The only cases still
+> unexercised are **explicit multi-segment** segmentation (R4) and the
+> **message-handle / `PROPCTL`-separated** property representation (R5). The procedure
+> below is the method of record.
 
 Most of these risks resolve with **one authorized lab experiment**:
 
