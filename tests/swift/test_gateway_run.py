@@ -114,7 +114,9 @@ def test_run_puts_drains_and_emits(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeMessaging()
     monkeypatch.setattr(gateway_run, "connect", lambda _args: fake)
     monkeypatch.setattr(gateway_run.time, "time", lambda: 1000.0)  # deadline reached at once
-    args = argparse.Namespace(count=2, seed=0, drain_seconds=0.0, **vars(_CONN))
+    args = argparse.Namespace(
+        count=2, seed=0, drain_seconds=0.0, request_reports=True, **vars(_CONN)
+    )
     result = gateway_run.run(args)
     assert isinstance(result, list)
     assert len(fake.browse(gateway_run.INSTRUCT_QUEUE)) == 2
@@ -132,6 +134,7 @@ def test_main_parses_defaults_and_dispatches_to_run(monkeypatch: pytest.MonkeyPa
     assert seen["count"] == 1000
     assert seen["seed"] == 0
     assert seen["drain_seconds"] == 120.0
+    assert seen["request_reports"] is True  # reports on by default
 
 
 def test_main_requires_qmgr_and_conn(monkeypatch: pytest.MonkeyPatch) -> None:
