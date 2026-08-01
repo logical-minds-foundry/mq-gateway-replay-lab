@@ -37,7 +37,12 @@ everything above it is new.
 The recommendation is **built and proven live**. Every mechanism and algorithm
 below was implemented as a working prototype and validated against a **real
 Native-HA queue manager** over a mutual-TLS channel; the figures in §10 are
-measured output from that run, not an illustration.
+measured output from that run, not an illustration. The collector is a **streaming,
+stateful** service that reads each message once and serves a snapshot decoupled from
+the fold (§9); it was **scale-hardened to hundreds of thousands of instructions**
+with the dashboard staying live throughout, its **client-vs-bindings** performance
+and its **Native-HA failover** recovery both measured (§11), and its settlement
+picture plus its own health surfaced on a Grafana board (§12).
 
 ## 2. The problem: settlement state is multi-valued, multi-day, and in the body
 
@@ -203,15 +208,42 @@ anomaly on a single unified channel, with the offending reference recorded, and
 the run **continues**. In a healthy flow this signal is zero; a non-zero value is
 a reason to look, not a dropped message and not an aborted pass.
 
-## 9. The collector: what to build
+## 9. The collector: streaming, stateful, decoupled
 
-One small, read-only collector that, on a schedule, browses the two audit queues,
-runs Algorithms 1–3, and publishes the state distribution, the named attention
-sets, the lifecycle latencies, and the anomalies. It holds no state that must
-survive a restart — the audit queues are the state. Its output feeds an operations
-dashboard. The data-driven core — the field catalog, the state-transition table,
-and the correlation rule — *is* the documentation, and it is what a re-implementer
-elsewhere reproduces; the surrounding code is straightforward once those tables
+The simplest form is a small, read-only collector that, on each pass, browses the
+two audit queues, runs Algorithms 1–3, and publishes the state distribution, the
+named attention sets, the lifecycle latencies, and the anomalies. That batch form
+is correct and is where the prototype started — but it re-reads the *entire*
+retained window on every pass, and at production volume that does not scale (§11).
+
+The production form is a **streaming, stateful collector** that reads each message
+once. It **cold-loads** the retained window at startup — one full browse-and-fold —
+then **maintains the settlement picture incrementally**: on each pass it browses
+only the *new* messages since the last (a persistent MQI browse cursor:
+`BROWSE_FIRST` once, then `BROWSE_NEXT`) and folds them into an in-memory
+per-instruction state. After each pass it publishes a pre-computed **snapshot**;
+the metrics endpoint serves that snapshot in milliseconds, so **the scrape is
+decoupled from the fold** — a monitoring poll never triggers the expensive work,
+however large the window. The single-threaded ingest loop is deliberate: measured
+steady-state volume is a few messages per second, so parallelism buys nothing it
+must pay for in complexity (§11).
+
+Crucially, the **statelessness property is preserved**: the collector persists
+nothing — the audit queues *are* the durable state — so a crash or a queue-manager
+failover is recovered by rebuilding in memory from a fresh cold-load. Recovery time
+*is* the cold-load time, which the collector publishes as a first-class metric.
+
+**Where it runs is a deliberate, security-aware choice.** By default it runs as a
+**client**, off-cluster, so the settlement processing can sit inside the firewall,
+out of the DMZ, away from the queue manager — the realistic enterprise placement.
+As a lever for when latency demands it and policy allows, the same collector can
+run **local to the queue manager in bindings mode**, trading placement for an
+order-of-magnitude faster browse (§11). The code is identical; only the connection
+and deployment differ.
+
+The data-driven core — the field catalog, the state-transition table, and the
+correlation rule — *is* the documentation, and it is what a re-implementer elsewhere
+reproduces; the streaming/deployment machinery is straightforward once those tables
 and the audit queues are in place.
 
 ## 10. Evidence: a live settlement run
@@ -249,17 +281,80 @@ The parasite boundary held throughout: only the `GW.SEC.*` objects were created;
 the queue manager, the existing transmission queue and channel to the
 counterparty, and everything else were declare-and-verified, never mutated.
 
-## 11. Scale
+## 11. Scale, performance, and recovery
 
-The cost profile is the request/reply recommendation's, unchanged: the fold and
-the correlation are cheap; the cost is the **browse** of the audit queues, bounded
-by the settlement window's volume via `CAPEXPRY` and reduced by running the
-collector local to the queue manager and browsing incrementally. Body parsing adds
-a fixed per-message cost proportional to message size, dwarfed by the browse
-round-trip. The collector reports the number of messages scanned beside the
-wall-clock so the cost stays quantified as volume grows.
+Every scaling decision here was forced by a **measurement**, not a hunch — the
+figures below are all from live runs against the Native-HA queue manager.
 
-## 12. Beyond MT540–548 — the deferred generalization
+**The wall the batch form hits.** A full browse-and-fold pass is **O(N)** in the
+*total retained* message count, and settlement is multi-day, so the retained window
+is large. Measured, the batch pass runs at **~1,400 msg/s**: 6.8 s at 10k, 19 s at
+25k, 36 s at 50k, **76 s at 100k** — already past a 30 s monitoring scrape, and a
+fully-replied multi-day window (~400k messages) is ~5 minutes. Profiling one pass
+is decisive: **97.4 % of the time is IO** — per-message browse round-trips — and
+only **2.6 % is compute** (parse + fold). Two conclusions follow and shaped the
+whole design: the bottleneck is **re-reading messages**, not computing metrics; and
+**the language is irrelevant** — a rewrite in a faster language would optimise the
+2.6 %. The answer is architectural: read each message once (§9).
+
+**Hardening the streaming form.** At hundreds of thousands of messages, two more
+costs surfaced — each fixed without a redesign:
+
+- *Whole-delta browse.* Returning the entire new delta as one list spikes memory and
+  produces one long fold that starves the metrics endpoint. Fixed with **bounded
+  browse batches** (a cap per pass) that **publish a partial snapshot between
+  batches**, plus a cooperative yield so the browse (which releases the interpreter
+  lock during IO) keeps the endpoint responsive.
+- *Re-fold per publish.* Re-folding the entire in-memory state on every publish is
+  O(state). Fixed with an **incremental fold cache** — each instruction's folded
+  state is advanced in place as messages arrive, so publishing is O(Δ), verified
+  byte-identical to the batch fold.
+
+With both in place the collector **stays live and populates the board
+progressively** through a hundreds-of-thousands cold-load, at **bounded memory** —
+the case that previously blanked the dashboard now fills it in front of you.
+
+**Client vs. bindings — the placement lever, quantified.** The client-mode cost is
+almost entirely the TCP/TLS **round-trip per browse** (~650 µs/message). Running
+the collector **local to the queue manager in bindings mode** (shared-memory IPC)
+was measured at **~14,300 msg/s vs. ~1,400 msg/s client — ~10×** — which collapses a
+351 s client cold-reload to **~35 s**. So the security-driven default (client,
+inside the firewall) and the performance option (bindings, on the queue manager) are
+now both characterised with a number; you choose placement knowing the exact trade.
+
+**Recovery.** Because the collector persists nothing, recovery is a rebuild from the
+queues. Against a live **Native-HA failover**, the client reconnected **transparently
+with no metrics gap** — better than the designed crash-then-reload — and maintained
+**exactly-once** ingestion across the reconnect (no re-read, no double-count). The
+cold-reload path is the safety net; the common case is seamless. The retained window
+is bounded by `CAPEXPRY`, so both queue depth and rebuild cost stay bounded as volume
+grows.
+
+**Correctness under stress.** The collector is stateless by construction — a
+`kill -9` mid-scan and a restart re-derive a **byte-identical** result — and the
+whole pipeline is covered to **100 % branch and line** with zero exemptions (the
+box-only pieces are unit-tested by mocking the MQ/socket boundary, not skipped).
+
+## 12. Observability — the settlement picture, and the collector watching itself
+
+The published snapshot drives a Grafana board (code-generated, deployed by this
+repo's own automation, scraped by Prometheus). It shows two layers:
+
+- **The settlement picture.** The state-distribution hero (the funnel from
+  instructed to settled, with the two terminal negatives), the named attention sets
+  — **aging / replay candidates**, **rejected**, **failing** — the per-hop
+  **lifecycle latencies** (mean and p95, from the queue manager's own
+  put-timestamps), and the **anomalies by kind**. Series are labelled by queue
+  manager, so a failover is a continuous line on the board, not a gap.
+- **The collector watching itself.** A self-metrics section makes the recovery and
+  liveness story visible: **recovery time** (the cold-reload duration — the number
+  operations cares about after a restart or failover), the **incremental fold cost**
+  off the scrape path, the **ingest rate**, the **sweep backlog** (is the loop
+  keeping up?), and the **snapshot publish-age** — so a stalled collector shows up
+  as *staleness*, not silence. This is unusually complete for a component of this
+  kind: the watcher is itself observed.
+
+## 13. Beyond MT540–548 — the deferred generalization
 
 This recommendation is built to the **public ISO 15022 MT540–548** rendering. The
 ISO 20022 successors — `sese.023` (instruction), `sese.024` (status advice),
@@ -276,8 +371,11 @@ parser tables, its own lifecycle, its own board — without disturbing this one.
 *Provenance: every mechanism, table, and algorithm in this document was
 implemented as a working prototype and validated live against a real Native-HA
 IBM MQ queue manager over a mutual-TLS channel, with the settlement audit
-exercised through real streaming audit queues. The figures in §10 are measured
-output from that run. Status codes and field structures are grounded in public
-ISO 15022 renderings cross-checked against the free ISO 20022 schemas, cited in
-`docs/swift-settlement-reference.md`; no copyrighted SWIFT Reference Guide text is
-reproduced.*
+exercised through real streaming audit queues. The figures in §10–§11 are measured
+output from those runs — the state distribution and the attention sets, the O(N)
+scan-cost curve, the client-vs-bindings browse rates, and the failover recovery.
+The streaming collector, its scale-hardening, and its observability are all built
+and covered to 100 % branch and line. Status codes and field structures are
+grounded in public ISO 15022 renderings cross-checked against the free ISO 20022
+schemas, cited in `docs/swift-settlement-reference.md`; no copyrighted SWIFT
+Reference Guide text is reproduced.*
