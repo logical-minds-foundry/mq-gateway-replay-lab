@@ -48,6 +48,19 @@
   changed_when: "'AMQ8006' in define_reply.stdout"
   failed_when: define_reply.rc != 0
 
+- name: Define the terminal COA/COD report ledger (multi-day CAPEXPRY; NO STREAMQ — collector browses it)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QLOCAL('{{ q_report }}') DEFPSIST(YES) SHARE MAXDEPTH({{ gw_sec_max_depth }}) CAPEXPRY({{ gw_sec_capexpry }}) REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_report
+  changed_when: "'AMQ8006' in define_report.stdout"
+  failed_when: define_report.rc != 0
+
 - name: Define the QALIAS (the app's transparent put target for instructions)
   ansible.builtin.shell: |
     set -o pipefail
