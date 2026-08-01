@@ -374,7 +374,7 @@ are venvs internally); *running from the source tree* is.
 - The build produces an **artifact** (a wheel, or a single-file `shiv`/`pex`).
   Ansible **installs the built artifact** to a fixed location (`/opt/gwlab`) so the
   systemd unit runs `/opt/gwlab/bin/gwlab-collector`. This mimics a production
-  install the same way the AMQ-7T shell-script role mimics a packaged install —
+  install the same way the `amqsevt` shell-script role mimics a packaged install —
   the target is "installed built artifact + entry point," reached by a local build
   rather than a package index.
 - A frozen native binary (PyInstaller/Nuitka) is **not** pursued: our code
