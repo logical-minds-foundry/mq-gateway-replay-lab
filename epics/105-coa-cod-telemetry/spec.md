@@ -1,509 +1,207 @@
 # Epic #105 — COA/COD transport-milestone telemetry: decomposing `instructed→acknowledged` — spec
 
-**Status:** Design approved; pushback + alignment complete. **SUSPENDED pending epic #65** — the spec/plan will be refitted to #65's finished data-model/dashboard shape before the docs PR. No docs PR opened; no implementation tasks filed yet.
+**Status:** Design approved; pushback + alignment complete; **refit to #65's completed architecture** (streaming collector, requester/responder apps, Grafana/Prometheus board). Ready to execute.
 **Epic:** logical-minds-foundry/mq-gateway-replay-lab#105
-**Builds on:** epic #65 (Confirmation Tracking v2 — SWIFT MT540–548
-settlement-lifecycle tracking). This epic is a **bolt-on** to #65, sequenced
-**strictly after** it. It reuses #65's `gwlab.swift` collector, correlation, and
-dashboard, and adds one browse source plus a small set of derived transport
-metrics. It does **not** modify #65's state machine.
+**Builds on:** epic #65 (Confirmation Tracking v2 — SWIFT MT540–548 settlement tracking), now essentially complete. This epic is a **bolt-on** to #65: it consumes #65's streaming collector, correlation, apps, and board, and adds one browse source plus a small set of derived transport metrics. It does **not** modify #65's state machine.
 
-> **Rendered-label convention.** Where this spec writes metric labels with a
-> Unicode arrow for readability (`instructed→acknowledged`), the *rendered*
-> dashboard/label form follows #65's code — ASCII arrow, lowercase state values:
-> `instructed->acknowledged`, `sent->arrived`, `arrived->delivered`,
-> `delivered->acknowledged` (`observe._latencies`, `observe.py:94`).
+> **Rendered-label convention.** Metric labels written with a Unicode arrow for readability (`instructed→acknowledged`) render as ASCII, lowercase, in the code: `sent->arrived`, `arrived->delivered`, `delivered->acknowledged` (`observe._latencies`, `observe.py:94`), and as Prometheus series/label values on the Grafana board.
 
 ---
 
 ## 1. Motivation — decomposing the coarsest lifecycle leg
 
-Epic #65 tracks a securities-settlement instruction through six business states
-(`INSTRUCTED → ACKNOWLEDGED → MATCHED → SETTLED`, with `REJECTED`/`FAILED`), and
-computes **inter-state latencies** from the MQ put-timestamps (#65 spec §11;
-`observe._latencies`): `instructed->acknowledged`, `acknowledged->matched`,
-`matched->settled`.
+Epic #65 drives each securities-settlement instruction through six business states (`INSTRUCTED → ACKNOWLEDGED → MATCHED → SETTLED`, with `REJECTED`/`FAILED`) and computes **inter-state latencies** from MQ put-timestamps (#65 spec §11; `observe._latencies`): `instructed->acknowledged`, `acknowledged->matched`, `matched->settled`.
 
-The very first of those legs — `instructed->acknowledged` — is a **single opaque
-interval**: the time from our put of the instruction to the first MT548 status
-advice coming back. When it is slow, #65 **cannot say why**. The delay could be:
+The first leg — `instructed->acknowledged` — is a **single opaque interval**: our put of the instruction to the first MT548 status advice. When it is slow, #65 **cannot say why**: the delay could be in the **network/inter-QM transport**, in the **counterparty's queue** (arrived but unconsumed — their consumer is backed up), or in the **counterparty's application** (consumed promptly but slow to respond). The SWIFT protocol gives no signal that distinguishes them — the first thing it emits is the MT548 ack, by which point all three intervals have already elapsed, invisibly.
 
-- in the **network / inter-QM transport** (our instruction is slow to reach the
-  counterparty's queue), or
-- in the **counterparty's queue** (it arrived but is sitting unconsumed — their
-  consumer is backed up), or
-- in the **counterparty's application** (it was consumed promptly but their app is
-  slow to emit the first response).
+MQ's native **report messages** — **COA** (Confirmation On Arrival) and **COD** (Confirmation On Delivery) — expose the two missing intermediate timestamps, splitting the leg into three attributable sub-legs.
 
-These are operationally very different problems, and the SWIFT application
-protocol gives no signal that distinguishes them — the first thing the SWIFT
-layer produces is the MT548 ack itself, by which point all three intervals have
-already elapsed, invisibly.
+### 1.1 Why this is a high-value observability win
 
-IBM MQ's native **report messages** expose exactly the two missing intermediate
-timestamps. This epic uses them to split `instructed->acknowledged` into three
-attributable sub-legs, and to raise early diagnostic signals *before* any SWIFT
-response exists.
+Two of these sub-legs answer, at a glance, the two questions that dominate settlement performance triage:
 
-### 1.1 Relationship to the SWIFT application protocol (why this is complementary)
+- **`sent->arrived` (delivery latency, from COA) — the headline.** COA gives an aggregate measure of **round-trip network / inter-QM performance**. The ability to **systematically rule the network in or out** is arguably the single biggest win here: the network path between us and the counterparty is *traditionally the first thing blamed* for a slowdown, and this eliminates or confirms it immediately, short-circuiting a large amount of misdirected troubleshooting.
+- **`arrived->delivered` (time on queue, COA→COD).** Tells you whether **the counterparty application is backlogged** — arrived on their queue but not yet consumed.
 
-COA/COD are **transport-layer** events: "arrived on the queue" and "removed from
-the queue by an application." They say nothing about business acceptance — that is
-what the SWIFT MT548 qualifiers (`ACKNOWLEDGED`, `MATCHED`, `REJECTED`, …) carry,
-at a higher layer. The two do not overlap or compete: COA/COD measure the
-transport of the instruction up to the moment the counterparty application takes
-ownership; the SWIFT lifecycle measures everything the application does with it
-afterwards. This epic is therefore **purely additive** to #65 — a lower-layer
-decomposition of a leg the business layer treats as atomic.
+Together these two timestamps localise a performance problem to *network*, *their queue*, or *their app* before any business response exists. That is the epic's core value.
+
+### 1.2 Relationship to the SWIFT application protocol (complementary, not competing)
+
+COA/COD are **transport-layer** events ("arrived on the queue", "removed by an application"); they say nothing about business acceptance, which the SWIFT MT548 qualifiers carry at a higher layer. This epic is **purely additive** to #65 — a lower-layer decomposition of a leg the business layer treats as atomic.
 
 ## 2. Thesis and boundaries
 
-- **Transparent by construction — zero queue-manager changes.** COA/COD are an
-  original-MQSeries, request-driven feature. The sending application sets report
-  options in the message descriptor; the counterparty queue manager emits and
-  returns the reports with **no configuration change on either queue manager**.
-  This is the epic's central claim and the reason it satisfies the **parasite /
-  boundary rule**: we configure only queues **we** own (one new report queue) and
-  change **nothing** on the shared lab queue manager or on SVCQM. The proof of
-  transparency *is* the absence of any queue-manager change (§11).
-- **Why the return route is free (basic store-and-forward).** A report is routed
-  on SVCQM purely by its `ReplyToQMgr` (our queue manager): it lands on whatever
-  transmission queue our QM name resolves to — the **`ReplyToQ` name
-  (`GW.SEC.REPORT`) is never evaluated on SVCQM**. The queue name is resolved only
-  when the report arrives back at *our* queue manager, where `GW.SEC.REPORT` exists
-  because we create it. Since replies to our QM already flow today, the
-  queue-manager-name routing is already proven; the counterparty's specific
-  `GW.SEC.REPLY` object is just an artifact of their app replying to it, not a
-  precondition for reports. Nothing on SVCQM needs to know `GW.SEC.REPORT` exists.
-- **Hard prerequisite: a real end-to-end message flow.** COA/COD are a
-  **real-remote-flow-only phenomenon** — a genuine COA/COD is emitted only by
-  SVCQM, when a real instruction traverses `GW.SEC.INSTRUCT` (QALIAS) → `.AUDIT`
-  → `STREAMQ`(MUSTDUP) → `.REMOTE` (QREMOTE) → SVCQM's landing queue → a real
-  responder's destructive get. #65's current simulation short-circuits this: it
-  puts *directly to `GW.SEC.INSTRUCT.AUDIT`* (`simulation._drive_instruction`,
-  `simulation.py:100`), bypassing the QALIAS and never reaching SVCQM, and #65
-  spec §2 states v2 has "no putter on any live path." **This is a known flaw in
-  #65's implementation that will be corrected in #65** (the outbound must put
-  through the QALIAS and round-trip to the real remote). **This spec is designed
-  as if that real flow exists** — it is #105's foundational prerequisite, because
-  without it there is nothing to generate a COA/COD.
-- **The application is the only non-transparent surface.** Given the real flow,
-  the sole app change is setting the report bits on the QALIAS put (§3). The
-  counterparty responder already consumes destructively (a real settlement app),
-  so COD fires with no change to it; no responder work is in scope beyond the
-  condition-injection below.
-- **Condition injection on the simulated service side.** The metrics and attention
-  sets are only demonstrable if the simulated counterparty can *manufacture* the
-  conditions they reveal — delayed pickup (dwell / service-interval-high), delayed
-  acknowledgement, and non-pickup. So a controllable, condition-injecting service
-  side (delay/withhold pickup and ack per-instruction) is an **implicit
-  requirement** of proving this epic. Its placement — a rework of #65's simulation
-  or a #105 load task — is resolved at plan time (§8.1); the requirement itself is
-  not optional.
-- The remaining net-new plumbing (`msg_id`/`feedback`, the report handler, the
-  report queue, metrics, dashboard) is enumerated in §8.1.
-- **`ARRIVED`/`DELIVERED` are transport milestones, not lifecycle `State`s.** #65's
-  six-state reachability graph and its `State` enum (`reference.py`) are untouched.
-  Because the milestones are not `State`s, they **cannot** flow through
-  `observe._latencies` (which folds adjacent `State` `Hop` pairs); the transport
-  legs are a **parallel metric path** (§7, §8).
-- **Scope split with #65.** This epic owns the transport sub-timeline, the report
-  queue, report correlation, the transport deltas, and the transport attention
-  sets. #65 continues to own the business-state latencies (`acknowledged->matched`,
-  `matched->settled`, and the long, multi-day legs) and the aging/rejected/failed
-  sets. The multi-day settlement window (T+1/T+2) is #65's concern.
+- **Transparent by construction — zero queue-manager changes.** COA/COD are request-driven: the application sets report options in the message descriptor and the counterparty queue manager (SVCQM) emits and returns the reports with **no configuration change on either queue manager**. We create only `GW.SEC.REPORT` (a queue we own). This satisfies the **parasite / boundary rule**; the transparency proof is a before/after MQSC config diff (§11).
+- **Why the return route is free (store-and-forward).** A report is routed on SVCQM purely by its `ReplyToQMgr` (our QM) to whatever transmission queue our QM name resolves to; the **`ReplyToQ` name (`GW.SEC.REPORT`) is evaluated only on arrival back at *our* QM**, where we create it. Replies already flow back today, so the qmgr-name routing is proven; the counterparty's `GW.SEC.REPLY` object is an artifact of their app, not a precondition for reports.
+- **The real end-to-end flow is already delivered by #65 (no longer a #105 prerequisite to build).** #65's **gateway requester app** puts each instruction through the `GW.SEC.INSTRUCT` QALIAS (`gateway_run.put_instructions`, `gateway_run.py:69-82`, put at `:79`) → `.AUDIT` → `STREAMQ`(MUSTDUP) → `.REMOTE` → SVCQM's landing queue (provisioned by `gw-sec-svc-queues`, #125) → the **SVC responder app**'s destructive get (`serve_responder._drain_instructions`, `serve_responder.py:63-69`). COA/COD therefore have a real flow to fire on. #105's only outbound change is to **attach the report options to that existing put**.
+- **The application is the only non-transparent surface.** The sole outbound change is setting the report bits on `gateway_run.put_instructions`. The responder already consumes destructively (COD fires with no change), and its **acknowledgement-delay injection already exists** (Directive `delay_vector`, `directive.py:44-46`; min-heap scheduler) — only pickup-delay/withhold and a per-instruction-commit restructure are new (§8.1).
+- **`ARRIVED`/`DELIVERED` are transport milestones, not lifecycle `State`s.** #65's six-state reachability graph (`reference.py`) is untouched; the transport metrics are a **parallel path**, never through `observe._latencies`.
+- **Scope split with #65.** This epic owns the transport sub-timeline, the report queue, report correlation, the transport deltas, and the transport attention sets. #65 keeps the business-state latencies, aging/rejected/failed sets, and the multi-day window.
+
+### 2.1 Which lifecycle view COA/COD feeds — a design fork #65 introduced
+
+#65 now maintains **two independent lifecycle views** that are cross-validated per SEME (`crossvalidate.cross_validate`, `crossvalidate.py:83-117`):
+
+- **Source #1 — the browse collector** (streaming `SettlementState` fed by `sweep()` over the audit queues), keyed by `SEME`.
+- **Source #2 — the app-side tracker** (`gateway_app.track`), the requester folding its *own* sent instructions against drained replies.
+
+**Decision: COA/COD feed source #1 (the browse collector).** The reports arrive on `GW.SEC.REPORT` and are *browsed*, which is source #1's native mode; and source #1 already browses `GW.SEC.INSTRUCT.AUDIT`, whose retained copy carries **both** the instruction's `MsgId` (`Message.msg_id`) **and** its `SEME` (in the body). So source #1 can **self-join**: `report.CorrelId → instruction MsgId → SEME`, attaching the transport milestones to the SEME-keyed instruction with no dependency on the app path. Transport milestones are a **source-#1 enrichment** and are **not part of the cross-validation** in this epic (the two views cross-validate *business* state; transport data exists only on the browse side). This keeps `msg_id` threading confined to the collector path (§6) and off `gateway_app`.
 
 ## 3. Mechanism — how the reports are requested and returned
 
-The outbound securities instruction is a **datagram** (`MQMT_DATAGRAM`); v2
-abandoned MQ request/reply in favour of body-reference correlation, and COA/COD
-work on datagrams. The instruction is **put through the `GW.SEC.INSTRUCT`
-QALIAS** (not directly to the audit queue) so it traverses the real
-QALIAS→AUDIT→`STREAMQ`(MUSTDUP)→QREMOTE→SVCQM chain and SVCQM sees it arrive on
-its landing queue. On the put, the application sets:
+The outbound instruction is a **datagram** (`MQMT_DATAGRAM`). On the existing put in `gateway_run.put_instructions`, when reports are enabled the application sets:
 
-- `MQMD.Report = MQRO_COA | MQRO_COD` — **plain** variants, *not* `_WITH_DATA`: we
-  already retain the full instruction body in `GW.SEC.INSTRUCT.AUDIT` and correlate
-  by id, so the reports need carry only their MQMD. (Consequence: reports are
-  **body-less** and must **not** be run through the SWIFT tokenizer — §8.1.)
-- `MQMD.ReplyToQ = GW.SEC.REPORT`, `MQMD.ReplyToQMgr = <our QM>` — the return
-  address for the reports (a queue we own; §5).
-- Default id correlation (`MQRO_COPY_MSG_ID_TO_CORREL_ID`): each report's
-  `CorrelId` is set to the instruction's `MsgId` (§6).
+- `MQMD.Report = MQRO_COA | MQRO_COD` — **plain** variants, *not* `_WITH_DATA` (we retain the full body in `GW.SEC.INSTRUCT.AUDIT` and correlate by id, so reports carry only their MQMD; consequently reports are **body-less** and must **not** be run through the SWIFT tokenizer).
+- `MQMD.ReplyToQ = GW.SEC.REPORT`, `MQMD.ReplyToQMgr = <our QM>`.
+- Default id correlation (`MQRO_COPY_MSG_ID_TO_CORREL_ID`): each report's `CorrelId` is the instruction's `MsgId` (§6).
 
-**Who generates them.** The **counterparty queue manager (SVCQM)** generates both
-reports: **COA** when the instruction arrives on its `GW.SEC.INSTRUCT` landing
-queue, **COD** when the responder does a destructive get of it. SVCQM routes the
-reports back over the **existing** return channel to `GW.SEC.REPORT`. No object is
-created or altered on SVCQM. (The streaming-audit topology may also produce a
-*local* COA — see §4.)
+**Who generates them.** SVCQM generates **COA** when the instruction arrives on its landing queue and **COD** when the responder destructively gets it, routing both back to `GW.SEC.REPORT` over the existing return channel. No object on SVCQM is created or altered. (The streaming-audit topology may also produce a *local* COA — §4.)
 
-**Requesting reports is an explicit, config-gated application decision.** A
-`request_reports` flag (default **on** in the lab) governs whether the outbound
-path sets the report bits, so the behaviour is auditable and can be toggled off to
-demonstrate the before/after — and to produce the transparency proof (§11).
-Mirrored in both `fake_messaging` and `pymqi_messaging`.
+**Config-gated.** A `request_reports` flag (default **on** in the lab) governs whether the put sets the report bits — auditable, and toggle-off gives the before/after transparency proof (§11). Mirrored in `fake_messaging` and `pymqi_messaging`.
 
 ## 4. The streaming-audit interaction — gating spike (first implementation task)
 
-**How do COA/COD interact with a streaming queue?** This is genuinely
-undocumented in our own experience and is the most interesting unknown in the
-epic. The outbound topology is **not** a simple put to a remote queue; it is the
-streaming-audit pattern: the app puts to the **QALIAS** `GW.SEC.INSTRUCT`, which
-resolves to the **local** retained original `GW.SEC.INSTRUCT.AUDIT` — a queue
-carrying the `STREAMQ … STRMQOS(MUSTDUP)` attribute — which **duplicates** the
-message to `GW.SEC.INSTRUCT.REMOTE` (the QREMOTE that hands the copy to SVCQM).
-Report-message behaviour depends on the exact object each copy lands on, and the
-streamed duplicate **shares the original's `MsgId`**, so any reports it triggers
-correlate to the *same* instruction. This **must be resolved before the collector
-is built**, via two tracks:
+**How do COA/COD interact with a streaming queue?** Undocumented in our experience and the most interesting unknown. The app puts to the QALIAS `GW.SEC.INSTRUCT`, which resolves to the local retained original `GW.SEC.INSTRUCT.AUDIT` (carrying `STREAMQ … STRMQOS(MUSTDUP)`), which **duplicates** the message to `GW.SEC.INSTRUCT.REMOTE` (QREMOTE → SVCQM). The streamed duplicate **shares the original's `MsgId`**, so any reports it triggers correlate to the same instruction. Resolve **before** the collector work, in two tracks:
 
-- **Track 1 — documentation research.** Establish from public IBM documentation
-  what COA/COD generation is defined to do when the destination queue carries a
-  `STREAMQ` attribute and a MUSTDUP duplicate is produced: is a COA generated for
-  arrival on the streaming (audit) queue itself; is the duplicate on the QREMOTE
-  suppressed from generating a COA under the transmission-queue exclusion
-  (`MQFMT_XMIT_Q_HEADER`) until it lands on SVCQM's local queue; and does the
-  duplicate carry the `Report`/`ReplyToQ`/`ReplyToQMgr` descriptor fields onward
-  unchanged. Cite what is found; record explicitly where the documentation is
-  silent (this interaction may simply be unspecified).
-- **Track 2 — live experiment.** Against the real lab topology, enable
-  `request_reports` for a single instruction and **observe exactly what lands on
-  `GW.SEC.REPORT`** — how many reports, of which `Feedback` type, generated by
-  which queue manager, with what put-times.
+- **Track 1 — documentation research.** From public IBM docs, what does COA/COD generation do when the destination queue carries `STREAMQ`/MUSTDUP: a COA on arrival at the local streaming/audit queue? the transmission-queue exclusion (`MQFMT_XMIT_Q_HEADER`) suppressing a COA on the remote leg until it lands on SVCQM? do the `Report`/`ReplyToQ`/`ReplyToQMgr` fields propagate through the duplicate? Cite each; record where the docs are silent.
+- **Track 2 — live experiment.** The real flow already exists (§2), so this is now easy: enable `request_reports` for **one** instruction via `gateway_run` and observe exactly what lands on `GW.SEC.REPORT` (count, `Feedback`, generating QM, put-times) with `runmqsc`/`amqsbcg`.
 
-  **Opening hypothesis (to confirm or refute):** because the streamed copy shares
-  the `MsgId`, we expect **a COA for each arrival** — one for the arrival on the
-  local streaming/audit queue (`GW.SEC.INSTRUCT.AUDIT`, at ~t0) and one for the
-  arrival on the counterparty landing queue (SVCQM `GW.SEC.INSTRUCT`, at t1) — plus
-  a single COD from SVCQM on destructive get. The transmission-queue exclusion may
-  or may not suppress an intermediate COA on the remote leg; the experiment settles
-  it.
+  **Opening hypothesis:** because the streamed copy shares the `MsgId`, expect **a COA per arrival** — one on the local audit queue (`GW.SEC.INSTRUCT.AUDIT`, ~t0) and one on SVCQM's landing queue (t1) — plus one COD. The transmission-queue exclusion may or may not suppress an intermediate COA; the experiment settles it.
 
-- **Source discrimination & resolution.** If more than one COA arrives (as the
-  hypothesis predicts), determine the field that distinguishes each by origin
-  (generating queue manager / put-time), so the collector maps the **local** COA
-  to a `SENT`-adjacent confirmation and the **SVCQM** COA to the real `ARRIVED`
-  milestone — keeping every report but interpreting each correctly. If they cannot
-  be cleanly distinguished, that is itself a finding that reshapes the metric
-  derivation, and is surfaced, not worked around silently.
+- **Source discrimination.** If more than one COA arrives, determine the field that distinguishes each by origin (generating QM / put-time), so the collector maps the **local** COA to a `SENT`-adjacent confirmation and the **SVCQM** COA to `ARRIVED` — keeping every report but interpreting each correctly. If they cannot be distinguished, that is a finding that reshapes the derivation, surfaced not hidden.
 
-**Deliverable of the spike:** a short, cited findings note recording — from both
-the documentation and the experiment — exactly which reports are generated, by
-which queue manager, with what timing and distinguishing fields, against the real
-lab topology; whether the opening hypothesis held; and the chosen mapping from
-observed reports to the `ARRIVED`/`DELIVERED` milestones. This mirrors #65's
-gating-spike-first discipline: no collector code is written against unverified
-report behaviour, and a surprising result is a **loud finding**, not a silent
-workaround.
+**Deliverable:** a short, cited findings note (doc + experiment) recording which reports are generated, by which QM, with what timing and distinguishing fields; whether the hypothesis held; and the chosen mapping from observed reports to `ARRIVED`/`DELIVERED`.
 
-**A negative result is an acceptable terminal outcome.** If the spike finds that
-COA/COD do not compose usefully with the streaming-audit + remote-QM topology
-(e.g. only a local COA fires and SVCQM's is suppressed, or COD timing is
-unusable), that well-characterised finding **is** the epic's value — this is a
-lab, and learning whether the mechanism works over this topology is the point.
-In that case the downstream build tasks are cut and the retrospective records the
-finding; the spike is **not** pass-or-bust, and the epic cannot "fail," only
-conclude.
+**A negative result is an acceptable terminal outcome.** If COA/COD do not compose usefully with the streaming-audit + remote-QM topology, that well-characterised finding **is** the epic's value; downstream tasks are cut and the retrospective records it. The spike is **not** pass-or-bust.
 
 ## 5. Queue topology — a dedicated terminal report ledger
 
-- **`GW.SEC.REPORT`** — a new queue **we own**, the return address for COA/COD
-  reports. Reports are kept **out of** the application-message audit queues
-  (`GW.SEC.INSTRUCT.AUDIT`, `GW.SEC.STATUS.AUDIT`), which stay pure application
-  traffic (our puts and their SWIFT responses). "Report" is the accurate name for
-  these messages.
-- **Terminal ledger, no `STREAMQ`.** Unlike the instruct/reply queues — which are
-  *live* queues that must stream a **copy** to a separate `.AUDIT` because the
-  primary message moves on — the report queue is **terminal**: nothing forwards
-  the reports, and the collector only browses them. So the report queue is *itself*
-  the retained ledger: **no `STREAMQ`, no separate `.AUDIT` copy**.
-- **Same retention as the SEC audit queues.** CAPEXPRY-capped to the **same
-  multi-day horizon** as the SEC audit queues (the `gw_sec_capexpry` value, derived
-  from `gw_sec_horizon_days: 3`, the T+2 horizon — `gw-sec-queues/defaults`),
-  because the reports are part of reconstructing each instruction's timeline over
-  its settlement life, not just at send time.
-- **Provisioned by the role this repo owns** (extending the `gw-sec-queues`
-  pattern), declaring only this one new local queue; the queue manager, SVCQM, and
-  the inter-QM link remain declare-and-verified, never mutated.
+- **`GW.SEC.REPORT`** — a new queue **we own**, the return address for COA/COD reports (confirmed not to exist yet: absent from `gw-sec-queues/defaults` `q_*` list). Kept **out of** the audit queues, which stay pure application traffic.
+- **Terminal ledger, no `STREAMQ`.** Nothing forwards the reports; the collector only browses them. So the report queue is *itself* the retained ledger — CAPEXPRY-capped to the **same multi-day horizon** as the SEC audit queues (`gw_sec_capexpry`, from `gw_sec_horizon_days: 3`), because reports are part of reconstructing each instruction's timeline over its settlement life.
+- **Provisioned by the role we own** (`gw-sec-queues`), one new local QLOCAL; the QM, SVCQM, and the inter-QM link stay declare-and-verified.
 
-The collector then browses **three** SEC sources, sequentially (§8): the two
-existing audit queues plus **`GW.SEC.REPORT`** — leading-edge, non-destructive;
-reports are left in place under CAPEXPRY like the audit queues.
+It becomes the collector's **third browse source** (§8).
 
-## 6. Correlation — the instruction is the join (and MsgId is net-new to carry)
+## 6. Correlation — the instruction is the join (MsgId is net-new to carry)
 
-- Reports carry `CorrelId = original instruction MsgId` (MQ default
-  `MQRO_COPY_MSG_ID_TO_CORREL_ID`). The MUSTDUP audit copy and the streamed remote
-  copy share the same `MsgId` (the point of MUSTDUP), so SVCQM-generated reports'
-  `CorrelId` maps back to the retained instruction. (§4 confirms this end-to-end.)
-- **The instruction is the join between two id spaces.** The **transport** timeline
-  joins on `MsgId ↔ report CorrelId`; the **business** timeline joins on
-  `SEME ↔ RELA` (#65's body-reference correlation, `reference.CORRELATION_SENDER_REF
-  = "SEME"` / `CORRELATION_RELATED_REF = "RELA"` on `:20C:`). Both anchor to the
-  same instruction.
-- **Correction vs the approved design: MsgId is not currently retained.** #65's
-  parsed `SwiftMessage` (`model.py`) carries `mt, seme, rela, statuses, put_time,
-  …` but **no `msg_id`**; the collector reads the raw MQ `MsgId` only to label a
-  malformed-parse anomaly (`collect.py:92`) and then discards it, and
-  `InstructionState` (`lifecycle.py`) is keyed by `seme`. So joining reports to
-  instructions by id requires **threading a new `msg_id` field** through
-  `model.SwiftMessage` → `collect` (the parse path) → `correlate` →
-  `lifecycle.InstructionState`. This is net-new work (§8.1), not a reuse of
-  something #65 already has.
+- Reports carry `CorrelId = instruction MsgId` (`MQRO_COPY_MSG_ID_TO_CORREL_ID`). The MUSTDUP audit copy and the streamed remote copy share the `MsgId`, so SVCQM-generated reports' `CorrelId` maps back to the retained instruction (§4 confirms end-to-end).
+- **Two id spaces, one join.** Transport joins on `MsgId ↔ report CorrelId`; business joins on `SEME ↔ RELA` (`reference.CORRELATION_SENDER_REF="SEME"` / `CORRELATION_RELATED_REF="RELA"` on `:20C:`). The retained instruction copy on `GW.SEC.INSTRUCT.AUDIT` carries **both** `MsgId` and `SEME`, so the **browse collector (source #1) self-joins** `report.CorrelId → MsgId → SEME` (§2.1).
+- **MsgId is not currently retained (net-new).** `model.SwiftMessage` (`model.py:48-58`) and `lifecycle.InstructionState` (`lifecycle.py:71-84`) carry no `msg_id`; the streaming `SettlementState` keys by `seme` (`stream/state.py:97`); `collect._decode_and_parse` reads `message.msg_id` only for an anomaly label and discards it (`collect.py:92`). So threading `msg_id` is net-new in the **streaming path** (`stream/state.py` entries, reading `Message.msg_id` from `browse_new` in `sweep`) and the batch model path for parity. It does **not** need to reach `gateway_app` (§2.1).
 
 ## 7. Transport milestones & metrics
 
-Milestones under `INSTRUCTED` (the state machine is unchanged; these are **not**
-`State`s):
+Milestones under `INSTRUCTED` (not `State`s):
 
 | Milestone | Source | Meaning |
 |-----------|--------|---------|
-| `SENT` | put commit (already captured as the instruction `put_time`) | our QM accepted and audited the instruction |
-| `ARRIVED` | **COA** (the SVCQM one; §4) | instruction arrived on SVCQM's `GW.SEC.INSTRUCT` landing queue |
+| `SENT` | the instruction put-time | our QM accepted and audited the instruction |
+| `ARRIVED` | **COA** (SVCQM; §4) | arrived on SVCQM's landing queue |
 | `DELIVERED` | **COD** | the responder destructively consumed it |
 
-**Derived legs — endpoint-named, rendered ASCII/lowercase (`sent->arrived`, …):**
+**Derived legs — endpoint-named, ASCII/lowercase:**
 
-| Leg | Interval | A slow value indicates |
-|-----|----------|------------------------|
-| `sent->arrived` (delivery latency) | `SENT → ARRIVED` | network / inter-QM transport |
-| `arrived->delivered` (**time on queue**) | `ARRIVED → DELIVERED` | the counterparty consumer is backed up |
-| `delivered->acknowledged` | `DELIVERED → first MT548` | the counterparty application's turnaround |
+| Leg | Interval | A slow value means | Priority |
+|-----|----------|--------------------|----------|
+| `sent->arrived` (delivery latency) | `SENT → ARRIVED` | **network / inter-QM transport** — rule the network in/out | **headline (§1.1)** |
+| `arrived->delivered` (**time on queue**) | `ARRIVED → DELIVERED` | the counterparty consumer is backed up | primary |
+| `delivered->acknowledged` | `DELIVERED → first MT548` | the counterparty application's turnaround | derived |
 
-- Because the milestones are not `State`s, these legs are computed on a **parallel
-  metric path**, not through `observe._latencies`. They land as **new fields on
-  `observe.Metrics`** (alongside the existing `latencies`), and — for the
-  `delivered->acknowledged` seam — join the transport put-times to the existing
-  `acknowledged` `Hop.at`.
-- `arrived->delivered` is the **per-message residence time** on the counterparty
-  queue — precisely MQ's `TimeOnQueue` statistic, so **time on queue** is the MQ
-  term for it, not an invented one. `delivery latency` / `time on queue` are
-  descriptive glosses; the canonical rendered labels remain endpoint-named
-  (`sent->arrived`, `arrived->delivered`).
-- **No composite "time-to-first-touch."** It would merely be the sum of the first
-  two legs; both are expected to be small, and meaningful signal in them flags a
-  *delivery/servicing* slowdown rather than business processing. The value is in
-  the **individual** deltas.
-- `delivered->acknowledged` is retained as a **derived** value bridging transport
-  into the first business state, not a separately maintained metric.
+- Computed on a **parallel path** (not via `_latencies`): new fields on the metrics container and new Prometheus `swift_settlement_*` series (§8). `delivered->acknowledged` joins `delivered` to the folded `acknowledged` timestamp.
+- `arrived->delivered` is the per-message residence time = MQ's `TimeOnQueue`, so **time on queue** is the MQ term, not invented. "delivery latency" / "time on queue" are glosses; canonical labels are endpoint-named.
+- **No composite "time-to-first-touch"** — the value is in the individual deltas.
 
-**Attention sets (reporting-only, in #65's style — named, no action taken),** which
-raise signal *before* any SWIFT response exists:
+**Attention sets (reporting-only, in #65's style),** raising signal *before* any SWIFT response:
 
 - **`sent`-but-no-COA** beyond a threshold — a **delivery problem**.
-- **`arrived`-but-no-COD** beyond a threshold — **stuck on the counterparty
-  queue**; the per-message analog of an MQ **Queue Service Interval High** event.
-  The threshold is a configurable **duration** (§8.1 — it belongs with the other
-  durations, not on the queue-name set).
+- **`arrived`-but-no-COD** beyond a threshold — **stuck on the counterparty queue**; the per-message analog of an MQ **Queue Service Interval High** event. The threshold is a configurable **duration** (§8.1 — with the other durations, not on the queue-name set).
 
-### 7.1 Measurement validity — which legs are single-clock
+### 7.1 Measurement validity
 
-The sub-legs are not all measured on one clock. `SENT` is stamped by **our** QM;
-`ARRIVED` (COA), `DELIVERED` (COD), and the first MT548 put-time are all stamped
-by **SVCQM**. Therefore:
-
-- **`arrived->delivered` (time on queue)** and **`delivered->acknowledged`** are
-  **single-clock (SVCQM) → skew-free** — a genuine robustness property.
-- **`sent->arrived` (delivery latency)** is the **only cross-clock leg** (SVCQM
-  COA minus our SENT). We **assume NTP-synchronised queue managers** — reasonable
-  for co-located lab boxes — and state that assumption explicitly here. But a
-  skewed clock could corrupt this leg, so a **negative or backwards-in-time
-  `sent->arrived` is treated as an anomaly** (a red flag on the collector's
-  anomaly channel), never surfaced as a silent metric. The lab's actual time-sync
-  configuration is **declare-and-verified** (§11) rather than assumed, since this
-  leg's credibility depends on it.
-- **Tertiary metrics (deferred, not built).** The moment we *receive* each report
-  (its arrival on `GW.SEC.REPORT`) would let us derive report back-propagation
-  times (COA-generated→received, COD-put→received). These are noted as possible
-  future tertiary metrics and are **explicitly out of scope** for now (§12).
-
-To keep `time on queue` exact, the condition-injecting sim responder **commits
-per-instruction** (§8.1); batching gets into one syncpoint would stamp a shared
-COD time and inflate dwell for the early messages in the batch.
+- **Single-clock vs cross-clock.** `SENT` is stamped by **our** QM; `ARRIVED`/`DELIVERED`/first-MT548 by **SVCQM**. So `arrived->delivered` and `delivered->acknowledged` are **single-clock (SVCQM) → skew-free**; `sent->arrived` is the **only cross-clock leg**. We **assume NTP-synchronised queue managers** (stated explicitly), treat a **negative/backwards `sent->arrived` as a `clock-skew` anomaly** (never a silent metric), and **declare-and-verify** the lab's actual time-sync (§11).
+- **SENT timestamp vs batched commit.** `gateway_run.put_instructions` currently stamps `put_time` locally per instruction (`gateway_run.py:78`) but commits the whole batch in one UOW (`:81`) — so early-in-batch instructions "sent" before they actually transmit, inflating `sent->arrived`. For accurate delivery latency, either **commit per-instruction** or **stamp SENT at commit**; resolved at plan time.
+- **Per-instruction commit on the responder.** For exact `time on queue`, the responder must **get+commit per instruction** — a restructure of the current batch-drain UOW (`serve_responder.py:63-69`, §8.1).
+- **Time-compression.** The load-sim compresses time (`Horizon.compression`, `swiftconfig.py:44`). COA/COD are real MQ events stamped in real wall-clock, and `SENT`/first-MT548 are also real put-times, so the legs are internally consistent in **real** time; but injected dwell/ack delays appear at their **compressed** real-time magnitude. Board panels label transport legs as real-time measurements.
+- **Tertiary metrics (deferred).** Report *receipt* times on `GW.SEC.REPORT` (COA-generated→received, COD-put→received) are possible future work; out of scope now (§12).
 
 ## 8. Architecture — where it lands in `gwlab.swift`
 
-- **Outbound (report options on the put).** The securities put through the
-  `GW.SEC.INSTRUCT` QALIAS is the §8.1 prerequisite (#65's fix); #105 adds the
-  **report request** to it, gated by `request_reports`. The `Messaging` abstraction
-  gains the ability to set `Report`/`ReplyToQ`/`ReplyToQMgr` on a put, in both
-  `fake_messaging` and `pymqi_messaging`.
-- **Collector (third source, distinct path).** #65's collector is a **sequential
-  browse loop** over `((instruct_audit, instructions), (status_audit, responses))`
-  (`collect.py:107-116`). This epic adds a **third entry** for `GW.SEC.REPORT` —
-  but with a **distinct MQMD-only handler**, because reports are body-less and
-  would fail the SWIFT tokenizer as `malformed`. The report handler keys on
-  `CorrelId` / `Feedback` / `put_time`, folds each report into the matching
-  instruction record, and records `ARRIVED`/`DELIVERED`. `DayReport`
-  (`collect.py:54-66`) gains a transport field carrying these.
-- **`Messaging.Message` gains `feedback`.** `Message` (`messaging.py`) is
-  `body, msg_id, correl_id, put_time` today — with **no `Feedback`**, so COA and
-  COD are indistinguishable. Add a `feedback` field (unset for application
-  messages; `MQFB_COA`/`MQFB_COD` for reports), set by `pymqi_messaging` from the
-  MQMD and by `FakeMessaging` in tests.
-- **Dashboard (front-of-lifecycle decomposition — new rendering).** #65's latency
-  panel (`dashboard._latency_panel`) auto-renders one row per `LatencyStats`; the
-  `instructed->acknowledged` "bar" is just one such row, with no object to
-  decompose in place. So the decomposition is **new rendering**: a transport panel
-  (or sub-rows) for the three sub-legs and the two transport attention sets,
-  positioned at the head of the lifecycle board, drawn from the new `Metrics`
-  fields.
+- **Outbound (report options on the existing put).** Add the report request to `gateway_run.put_instructions` (`gateway_run.py:69-82`), gated by `request_reports`. Extend the `Messaging` port so `put` accepts report options and `Message` carries `feedback`, in `fake_messaging` and `pymqi_messaging`; the `feedback` value is read in the `Message(...)` construction sites for `browse_new`/`browse`/`get` (`pymqi_messaging.py:214-221`, `:157-162`, `:138-143`).
+- **Collector (third source into the streaming path).** Production ingest is the streaming `sweep()` over `browse_new`, folding into `SettlementState` — **#65 already reserved the COA/COD slot** (`sweep.py:44-46`; streaming-collector design §3/§4). Add `report_audit` (i.e. `GW.SEC.REPORT`) to `sweep._QUEUE_ORDER` and a **report branch to `SettlementState.ingest`** (`stream/state.py:101-134`) that keys the body-less report by `CorrelId → MsgId → SEME` and records `ARRIVED`/`DELIVERED` on the instruction entry. Mirror in the batch `collect.collect` loop (`collect.py:107-116`) + `DayReport` (`collect.py:54-66`) for parity. Reports are never routed through `_decode_and_parse` (they'd be `malformed`).
+- **Metrics + exposition.** New transport-leg + attention-set fields on the metrics container (`observe.Metrics`, `observe.py:67-79`); two new anomaly kinds (`orphan-report`, `clock-skew`) added to the closed `_ANOMALY_KINDS` tuple (`observe.py:55`) **and** emitted as Prometheus label values via the streaming exposition (`stream/snapshot.py`, `stream/selfmetrics.py`, `exposition.py`).
+- **Board (Grafana, the deployed surface).** The front-of-lifecycle decomposition is new panels on the code-generated Grafana board (`board.py`, `build_settlement_board`, querying `swift_settlement_*`): the three sub-legs + the two attention sets, at the head of the lifecycle view. The legacy HTML `dashboard.py` (`_latency_panel`/`_anomaly_panel`) is updated in parallel for the offline board.
+- **Condition injection.** Extend `Directive` (`directive.py`) with `pickup_delay`/`withhold_pickup` alongside the existing `delay_vector` ack-timing, and restructure `serve_responder._drain_instructions` to per-instruction get+commit (§8.1).
 
-### 8.1 Integration cost — net-new work vs reuse
+### 8.1 Integration cost — reused / resolved vs net-new (verified against current `develop`)
 
-Enumerated so the plan is honest (each verified against #65's committed code):
+**Delivered by #65 (reuse, no longer #105 work):**
+- The live securities put through the QALIAS (`gateway_run.put_instructions`) and the full real chain to SVCQM and back (`gw-sec-queues`, `gw-sec-svc-queues`).
+- A destructive-get responder (`serve_responder`).
+- Per-instruction **acknowledgement**-delay injection (`Directive.delay_vector` + min-heap scheduler).
+- The streaming collector with a **reserved third-source slot** for COA/COD (`sweep.py:44-46`).
+- The `GW.SEC.INSTRUCT` QALIAS name (as code/infra constants) and the `SEME`/`RELA` correlation.
 
-**Prerequisite (delivered by #65's fix, not built here):**
-0. **A real end-to-end securities flow** — the outbound put goes through the
-   `GW.SEC.INSTRUCT` QALIAS and round-trips to a real SVCQM responder (correcting
-   #65's `direct-to-audit` shortcut, `simulation.py:100`). This includes a
-   `instruct` QALIAS field on `SwiftQueueSet` (`swiftconfig.py`, currently only
-   `instruct_audit`/`status_audit`). #105 is designed on top of this (§2); if #65
-   has not yet landed it when #105 starts, #105's first build step is to establish
-   it, but conceptually it is #65's correctness fix.
-
-**Net-new (must be built in #105):**
-1. **Report options on the outbound put** — set `Report`/`ReplyToQ`/`ReplyToQMgr`
-   on the QALIAS put, gated by `request_reports`.
-1b. **Condition-injecting service side** — controllable per-instruction delay /
-   withholding of pickup and acknowledgement on the simulated counterparty, to
-   manufacture the dwell / stuck-on-queue / slow-ack conditions the metrics reveal
-   (§2). It **commits each get per-instruction** (not batched), so `time on queue`
-   is exact (§7.1). Placement (rework #65's simulation vs a #105 load task) decided
-   at plan time.
-2. **`msg_id` propagation** through `model.SwiftMessage` → `collect` → `correlate`
-   → `lifecycle.InstructionState` (§6) — today MsgId is discarded after anomaly
-   labelling.
-3. **`feedback` field** on `messaging.Message` + `FakeMessaging` + `pymqi_messaging`
-   (COA vs COD).
-4. **Report queue** `GW.SEC.REPORT` provisioning in the `gw-sec-queues` role
-   (terminal, CAPEXPRY on the SEC horizon).
-5. **Report browse + MQMD-only handler** as a third collector source with its own
-   parse path (not `_decode_and_parse`).
-6. **Config**: `report_ledger` (queue name) + `instruct` (QALIAS) on
-   `SwiftQueueSet`; `request_reports` gate; the **service-interval threshold as a
-   duration** on `Horizon` (`swiftconfig.py:27-36`) or a new config object — *not*
-   on the queue-name `SwiftQueueSet` (a category mismatch).
-7. **Transport metrics + two attention sets** as new `observe.Metrics` fields on a
-   parallel path (not through `_latencies`); new dashboard rendering.
-8. **Two new anomaly kinds — `orphan-report` and `clock-skew`** (the latter for a
-   negative/backwards `sent->arrived`, §7.1). `_ANOMALY_KINDS` (`observe.py:55`) is
-   a **closed tuple** iterated by the dashboard (`dashboard._anomaly_panel`); adding
-   kinds means editing that set and the panel, not a free-form add.
-
-**Reused unchanged:** the SEC queue topology and CAPEXPRY horizon; the
-`SEME`/`RELA` body correlation; the MQ put-time as the latency time source; the
-unified anomaly channel and attention-set *mechanism* (`collect.Anomaly`,
-`observe.Metrics.aging/rejected/failed`); the sequential browse model; the
-`gw-sec-queues` provisioning pattern.
+**Net-new (built in #105):**
+1. **Report options on `gateway_run.put_instructions`** (gated by `request_reports`); `Messaging.put` gains report options; `Message` gains `feedback` (read in `browse_new`/`browse`/`get`).
+2. **`GW.SEC.REPORT`** provisioning in `gw-sec-queues` (terminal, CAPEXPRY on the SEC horizon; new `q_report` var).
+3. **`msg_id` threading** into the **streaming** path (`stream/state.py` entries + reading `Message.msg_id` in `sweep`) and the batch model for parity — not into `gateway_app` (§2.1).
+4. **Report ingest**: a third `sweep._QUEUE_ORDER` entry + a report branch in `SettlementState.ingest` (self-join `CorrelId→MsgId→SEME`); batch-`collect` parity; `DayReport` transport field.
+5. **Transport metrics + two attention sets** on the metrics container **and** the Prometheus exposition; **two anomaly kinds** (`orphan-report`, `clock-skew`) in `_ANOMALY_KINDS` **and** as exposition label values.
+6. **Grafana board panels** (`board.py`) for the transport decomposition + attention sets; parallel HTML `dashboard.py` update.
+7. **Config**: `SwiftQueueSet` gains `instruct` (QALIAS) + `report_ledger`; `request_reports`; `Horizon` gains a `service_interval` duration (`Horizon` now spans `swiftconfig.py:27-45` and already has `compression`).
+8. **Condition injection**: `Directive` gains `pickup_delay`/`withhold_pickup`; `serve_responder` UOW restructured to per-instruction get+commit.
+9. **SENT-accuracy fix**: per-instruction commit (or commit-time SENT stamp) on `gateway_run.put_instructions` (§7.1).
 
 ## 9. Error handling & the no-silent-failures stance
 
-Consistent with the project rule and #65's unified anomaly channel:
-
-- **Orphan report** — a report whose `CorrelId` matches no known instruction is
-  flagged as a new `orphan-report` kind on the collector's anomaly channel (the
-  transport analog of #65's orphan `RELA`), never dropped. (Requires extending the
-  closed `_ANOMALY_KINDS` tuple and the anomaly panel — §8.1.)
-- **Missing expected report** — surfaces as an **attention-set** entry (§7), never
-  silently treated as healthy.
-- **Loud put failure** — if requesting reports ever causes the instruction put to
-  fail, it fails loudly; no swallowed exception, no report-less silent send.
-- **Local-COA artefact** (pending §4) — if the spike confirms a local COA, the
-  collector discriminates it by origin and maps it explicitly (to a `SENT`-adjacent
-  confirmation), never by silently discarding reports.
+- **Orphan report** — a report whose `CorrelId` matches no known instruction is flagged as `orphan-report` on the anomaly channel (transport analog of #65's orphan `RELA`), never dropped. In the streaming `SettlementState`, a report arriving before its instruction is held (like the existing orphan-gating) and re-joined, not discarded.
+- **Missing expected report** — surfaces as an **attention-set** entry (§7), never silently healthy.
+- **Loud put failure** — if requesting reports ever fails the put, it fails loudly.
+- **Clock-skew** — negative `sent->arrived` → `clock-skew` anomaly, excluded from the leg (§7.1).
+- **Local-COA artefact** (pending §4) — if confirmed, discriminated by origin and mapped explicitly, never silently discarded.
 
 ## 10. Testing strategy
 
-Test-driven against the `fake_messaging` harness (as in #65): `FakeMessaging` is
-extended to enqueue **body-less** report messages with `feedback` set
-(`MQFB_COA`/`MQFB_COD`), `correl_id = the instruction msg_id`, and controllable
-`put_time`. This makes correlation, the report fold, the transport-metric
-arithmetic, the attention-set thresholds, and the dashboard decomposition all
-provable without a live queue manager. The report handler is tested to **not**
-route reports through the SWIFT tokenizer (no spurious `malformed` anomalies), and
-orphan / missing-report paths are exercised by fixtures. Live behaviour is proven
-by the validation task (§11).
+Test-driven against `fake_messaging`: extend `FakeMessaging` to enqueue **body-less** reports with `feedback` (`MQFB_COA`/`MQFB_COD`), `correl_id = instruction msg_id`, controllable `put_time`, served over `browse_new`. This makes the `CorrelId→MsgId→SEME` self-join, the `SettlementState` report branch, the transport-metric arithmetic, the attention-set thresholds, and the anomaly paths (orphan/clock-skew) provable without a live QM. The report handler is tested to **not** tokenize reports (no spurious `malformed`). Live behaviour is proven by the validation task (§11).
 
-## 11. Validation & proof (closing bookend)
+## 11. Validation & proof (closing bookend, issue #108)
 
-A **live-run validation** task (issue #108): drive a day's instructions with
-`request_reports` enabled against the live lab, and confirm:
+Drive a day via `gateway_run` with `request_reports` enabled against the live lab, and confirm:
 
-1. COA and COD arrive on `GW.SEC.REPORT` and correlate to their instructions by
-   `MsgId`;
-2. the three transport sub-legs compute and render on the board;
-3. **the queue-manager configurations — ours and SVCQM — are identical before and
-   after** (a captured MQSC/config diff showing no change). This diff **is** the
-   transparency proof and the headline acceptance criterion.
+1. COA and COD arrive on `GW.SEC.REPORT` and correlate to instructions by `MsgId → SEME`;
+2. the three transport sub-legs compute and render on the Grafana board;
+3. **the QM configurations — ours and SVCQM — are identical before and after** (captured MQSC diff = the transparency proof, the headline acceptance).
 
-Additionally, a lightweight **time-sync sanity check** (declare-and-verify, not a
-mutation): confirm what the lab actually does to keep the queue-manager host
-clocks synchronised — presumed to be the default host-machine sync, but never yet
-verified or measured — and record whether the clocks are in fact staying in sync,
-since the `sent->arrived` leg (§7.1) depends on it. A drift finding is a loud
-signal, not a silent correction.
+Plus a lightweight **time-sync sanity check** (declare-and-verify, not a mutation): confirm what keeps the QM host clocks synced (presumed default host-sync, never yet verified) and whether they are in fact synced, since `sent->arrived` depends on it. A drift finding is loud, not silently corrected.
 
 ## 12. Scope — explicitly out
 
-- No change to #65's six-state machine, business-state latencies, or attention
-  sets beyond adding the transport milestones and the two transport attention
-  sets.
-- No responder change (it already consumes destructively).
-- No `_WITH_DATA` report variants; no exception/expiry report handling (COA/COD
-  only).
-- No remediation/replay action on a missing report — reporting/observability only,
-  matching #65's boundary.
-- No queue-manager, SVCQM, or channel configuration changes (the entire point).
-- **Deferred tertiary metrics** — report back-propagation times derived from when
-  each report is *received* on `GW.SEC.REPORT` (COA-generated→received,
-  COD-put→received). Noted as possible future work (§7.1); not built now.
+- No change to #65's six-state machine or business-state latencies beyond adding the transport milestones and two attention sets.
+- Transport milestones do **not** join #65's cross-validation of the two views (§2.1); COA/COD feed source #1 only.
+- No `_WITH_DATA` report variants; no exception/expiry report handling.
+- No remediation/replay on a missing report — observability only.
+- No queue-manager, SVCQM, or channel configuration changes.
+- **Deferred tertiary metrics** — report back-propagation times (COA-generated→received, COD-put→received).
 
 ## 13. Success criteria
 
-1. A securities outbound put exists through the `GW.SEC.INSTRUCT` QALIAS and
-   requests plain COA/COD (gated by `request_reports`) with correct
-   `ReplyToQ`/`ReplyToQMgr`; the simulation drives it through the QALIAS.
-2. The gating spike (§4) has recorded, against the real topology, exactly which
-   reports are generated and by which queue manager, and resolved the double-COA
-   question (documentation + experiment).
-3. `GW.SEC.REPORT` exists as a terminal CAPEXPRY ledger on the SEC horizon,
-   provisioned by the role this repo owns; nothing on the shared QM or SVCQM
-   changed.
-4. `msg_id` is carried through the model and `feedback` distinguishes COA/COD; the
-   collector browses the report queue as a third source with an MQMD-only handler
-   and folds reports into each instruction by `CorrelId`.
-5. `instructed->acknowledged` is decomposed into `sent->arrived`,
-   `arrived->delivered` (time on queue), and `delivered->acknowledged`, on a
-   parallel metric path, rendered at the front of the lifecycle board.
-6. The two transport attention sets surface, with the `arrived`-but-no-COD bound
-   framed as a per-message service-interval-high signal, its threshold configured
-   as a duration.
-7. Orphan (`orphan-report`) and missing reports are flagged, never swallowed.
-8. The live-run validation captures the before/after config diff proving
-   transparency.
+1. `gateway_run.put_instructions` requests plain COA/COD through the QALIAS (gated by `request_reports`) with correct `ReplyToQ`/`ReplyToQMgr`, and SENT is accurate (per-instruction commit or commit-time stamp).
+2. The gating spike (§4) has recorded which reports are generated and by which QM, and resolved the double-COA question (doc + experiment).
+3. `GW.SEC.REPORT` exists as a terminal CAPEXPRY ledger; nothing on the shared QM or SVCQM changed.
+4. `msg_id` is carried through the streaming path; the report branch self-joins `CorrelId→MsgId→SEME`; `feedback` distinguishes COA/COD.
+5. `instructed->acknowledged` is decomposed into `sent->arrived`, `arrived->delivered`, `delivered->acknowledged` on a parallel path, rendered on the Grafana board with `sent->arrived` foregrounded (§1.1).
+6. The two transport attention sets surface; the `arrived`-but-no-COD bound is a per-message service-interval-high signal, its threshold a duration.
+7. Orphan (`orphan-report`) and `clock-skew` anomalies are flagged (container + exposition), never swallowed.
+8. Condition injection (pickup-delay/withhold on `Directive`; per-instruction responder commit) produces demonstrable dwell / stuck-on-queue conditions.
+9. The live-run validation captures the before/after config diff proving transparency.
 
 ## 14. Sources (public IBM documentation)
 
-- Report field details — MQMD:
-  https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=descriptor-field-details-mqmd
-- Types of message (report messages):
-  https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=messages-types-message
-- Report (MQLONG) reference:
-  https://www.ibm.com/docs/SSFKSJ_9.2.0/com.ibm.mq.ref.dev.doc/q097680_.htm
-- Queue service interval events:
-  https://www.ibm.com/docs/en/ibm-mq/8.0.0?topic=events-queue-service-interval
-- Queue Service Interval High:
-  https://www.ibm.com/docs/en/SSFKSJ_9.1.0/reference/q050010_.html
+- Report field details — MQMD: https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=descriptor-field-details-mqmd
+- Types of message (report messages): https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=messages-types-message
+- Report (MQLONG) reference: https://www.ibm.com/docs/SSFKSJ_9.2.0/com.ibm.mq.ref.dev.doc/q097680_.htm
+- Queue service interval events: https://www.ibm.com/docs/en/ibm-mq/8.0.0?topic=events-queue-service-interval
+- Queue Service Interval High: https://www.ibm.com/docs/en/SSFKSJ_9.1.0/reference/q050010_.html
 
 ## 15. Relationship to #65
 
-This epic presupposes #65's `gwlab.swift` collector, correlation, dashboard, and
-`GW.SEC.*` topology, and extends them additively (the exact reuse-vs-net-new split
-is §8.1): one new owned queue, one new browse source with its own handler, three
-new derived metrics on a parallel path, two new attention sets, `msg_id`/`feedback`
-plumbing, and a gated securities outbound put. It is the transport-layer
-decomposition of the single leg #65 treats as atomic — valuable precisely when
-that leg is slow and someone needs to know whether to call the network team, the
-counterparty's operations, or the counterparty's application owners.
+This epic presupposes #65's now-complete streaming collector, requester/responder apps, correlation, Grafana board, and `GW.SEC.*` topology, and extends them additively (§8.1): one owned queue, one browse source folded into the reserved slot, three derived metrics on a parallel path, two attention sets, `msg_id`/`feedback` plumbing, report options on the existing put, and pickup/withhold condition injection. It is the transport-layer decomposition of the single leg #65 treats as atomic — and its headline, `sent->arrived`, lets an operator rule the network in or out at a glance.

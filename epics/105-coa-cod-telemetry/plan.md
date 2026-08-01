@@ -2,26 +2,25 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Decompose #65's opaque `instructed->acknowledged` settlement leg into three attributable transport sub-legs — `sent->arrived`, `arrived->delivered` (time on queue), `delivered->acknowledged` — plus two pre-response attention sets, by requesting MQ-native COA/COD reports on the outbound instruction and folding them into #65's collector, at zero queue-manager cost.
+**Goal:** Decompose #65's opaque `instructed->acknowledged` settlement leg into three attributable transport sub-legs — `sent->arrived` (delivery latency; the headline network-elimination signal), `arrived->delivered` (time on queue), `delivered->acknowledged` — plus two pre-response attention sets, by requesting MQ-native COA/COD reports on the existing outbound instruction and folding them into #65's **streaming collector**, at zero queue-manager cost.
 
-**Architecture:** A bolt-on to `gwlab.swift`. The outbound securities put (through the `GW.SEC.INSTRUCT` QALIAS) requests plain COA/COD; SVCQM returns them to a new terminal `GW.SEC.REPORT` ledger we own; the collector browses it as a **third source** with a **distinct MQMD-only handler** and folds each report into its instruction by `CorrelId (= MsgId)`. Transport metrics live on a **parallel path** off `observe.Metrics` (the milestones are not lifecycle `State`s). A **gating spike** (doc research + live experiment) resolves the undocumented COA/COD × streaming-queue interaction before any collector code is written; a well-characterised negative result is an acceptable terminal outcome.
+**Architecture:** A bolt-on to the now-complete `gwlab.swift`. `gateway_run.put_instructions` (the live requester) requests plain COA/COD through the `GW.SEC.INSTRUCT` QALIAS; SVCQM returns them to a new terminal `GW.SEC.REPORT` ledger; the streaming collector browses it as a **third source** (a slot #65 already reserved in `sweep._QUEUE_ORDER`) and folds each report into its instruction by **self-join `CorrelId → MsgId → SEME`** in `SettlementState.ingest`. Transport metrics live on a **parallel path** and render as new `swift_settlement_*` Prometheus series + Grafana panels. A **gating spike** resolves the COA/COD × streaming-queue interaction first; a negative result is an acceptable terminal outcome.
 
-**Tech Stack:** Python 3.12, pytest, the existing `gwlab` `Messaging` protocol (`fake_messaging` ↔ `pymqi_messaging`), the `gwlab.swift` collector/observe/dashboard, MQSC + Ansible (`gw-sec-queues`). Validation is `vrg-container-run -- vrg-validate` **only**.
+**Tech Stack:** Python 3.12, pytest, the `gwlab` `Messaging` port (`browse_new` persistent cursor; `fake_messaging` ↔ `pymqi_messaging`), the streaming `gwlab.swift.stream` collector, Prometheus exposition + code-generated Grafana board (`board.py`), MQSC + Ansible (`gw-sec-queues`). Validation is `vrg-container-run -- vrg-validate` **only**.
 
 ## Global Constraints
 
-Every task's requirements implicitly include these (verbatim from the spec):
+Every task implicitly includes these (verbatim from the spec):
 
-- **Zero queue-manager changes — parasite rule by construction.** We create only `GW.SEC.REPORT` (a queue we own). Nothing on the shared lab QM or on SVCQM is created or mutated. The transparency proof is a before/after MQSC config diff (Task 9).
-- **Plain COA/COD only.** `MQRO_COA | MQRO_COD`, *not* `_WITH_DATA`; no exception/expiry report handling. Reports are **body-less** — never routed through the SWIFT tokenizer.
-- **Reporting / observability only.** No remediation/replay/resend on a missing report.
-- **Milestones are not `State`s.** `SENT`/`ARRIVED`/`DELIVERED` do **not** enter #65's reachability graph or `State` enum; transport metrics are a **parallel path**, never through `observe._latencies`.
-- **Endpoint-named, ASCII labels.** Rendered leg labels are lowercase ASCII: `sent->arrived`, `arrived->delivered`, `delivered->acknowledged` (matching `observe.py:94`). "delivery latency" / "time on queue" are glosses, not labels.
-- **NTP sync assumed and stated.** Only `sent->arrived` is cross-clock; a negative/backwards value is an **anomaly** on the collector's channel, never a silent metric.
-- **No silent failures.** Orphan report / missing report / implausible timing → flagged, logged with the offending id, never swallowed, never a hard crash.
-- **Bolt-on; real flow is a prerequisite.** A real end-to-end securities flow (QALIAS put → STREAMQ → REMOTE → SVCQM → real destructive-get responder) is #65's correctness fix and this epic's precondition. If not yet landed when #105 starts, Task 2 establishes the QALIAS put.
-- **Repo conventions.** `vrg-git`/`vrg-gh`/`vrg-commit` wrappers; work on the assigned feature-branch worktree; `vrg-validate` is the only validation command.
-- **Anonymization.** Generic vocabulary only; invented `GW.SEC.*`/`SVCQM` names; no client-identifiable content anywhere.
+- **Zero queue-manager changes — parasite rule by construction.** Create only `GW.SEC.REPORT`. Nothing on the shared QM or SVCQM is created/mutated. Proof = before/after MQSC diff (Task 9).
+- **Plain COA/COD only** (`MQRO_COA | MQRO_COD`, not `_WITH_DATA`); reports are **body-less** — never run through the SWIFT tokenizer.
+- **Milestones are not `State`s.** Transport metrics are a **parallel path**, never through `observe._latencies`.
+- **COA/COD feed source #1 (the browse collector) only** — self-join `CorrelId→MsgId→SEME` in `SettlementState`; not the app-side tracker, not #65's cross-validation.
+- **Endpoint-named, ASCII labels** (`sent->arrived`, …); `sent->arrived` (network) is the foregrounded headline.
+- **NTP assumed and stated;** negative `sent->arrived` → `clock-skew` anomaly, never a silent metric.
+- **No silent failures.** Orphan/missing report, clock-skew → flagged, logged, never swallowed or crashing.
+- **Repo conventions:** `vrg-git`/`vrg-gh`/`vrg-commit`; assigned feature-branch worktree; `vrg-validate` only.
+- **Anonymization:** generic vocabulary; invented `GW.SEC.*`/`SVCQM`; no client-identifiable content.
 
 ---
 
@@ -30,32 +29,36 @@ Every task's requirements implicitly include these (verbatim from the spec):
 ```
 ansible/roles/gw-sec-queues/
   defaults/main.yml   [Task 1]  add q_report GW.SEC.REPORT + horizon CAPEXPRY (terminal, no stream)
-  tasks/main.yml      [Task 1]  create the one new QLOCAL (assert/verify pattern)
+  tasks/main.yml      [Task 1]  create the one new QLOCAL
 
 src/gwlab/
-  messaging.py        [Task 2]  Message gains `feedback`; put gains report options (Report/ReplyToQ/ReplyToQMgr)
-  fake_messaging.py   [Task 2]  honour report options / carry feedback; enqueue synthetic reports for tests
-  pymqi_messaging.py  [Task 2]  set MQMD Report/ReplyTo on put; read Feedback on browse
+  messaging.py        [Task 2]  Message gains feedback; put gains report options; browse_new/browse/get read feedback
+  fake_messaging.py   [Task 2]  honour report options; enqueue body-less reports over browse_new
+  pymqi_messaging.py  [Task 2]  set MQMD Report/ReplyTo on put; read Feedback into Message
   swift/
-    swiftconfig.py    [Task 2/6] SwiftQueueSet gains `instruct` (QALIAS) + `report_ledger`; `request_reports`; Horizon gains `service_interval`
-    send.py           [Task 2]  securities outbound put through the QALIAS, report-options gated by request_reports
-    model.py          [Task 4]  SwiftMessage gains `msg_id`
-    collect.py        [Task 4/5] thread msg_id; add GW.SEC.REPORT as a third source with an MQMD-only handler; DayReport.transport
-    correlate.py      [Task 4]  carry msg_id onto the correlated instruction
-    lifecycle.py      [Task 4]  InstructionState carries msg_id
-    reports.py        [Task 5]  ReportRecord (feedback, correl_id, put_time) + milestone mapping (ARRIVED/DELIVERED)
-    observe.py        [Task 6]  Metrics gains transport legs + two attention sets; orphan-report anomaly kind; negative-leg anomaly
-    dashboard.py      [Task 7]  front-of-lifecycle transport decomposition panel
-    responder.py /
-    simulation.py     [Task 8]  condition injection (delay/withhold pickup+ack; per-instruction commit)
+    gateway_run.py    [Task 2/9] request COA/COD on put_instructions (gated); SENT-accuracy (per-instruction commit)
+    swiftconfig.py    [Task 2/6] SwiftQueueSet gains instruct (QALIAS) + report_ledger; request_reports; Horizon.service_interval
+    model.py          [Task 4]  SwiftMessage gains msg_id
+    collect.py        [Task 4/5] batch parity: thread msg_id; report handling in the batch loop; DayReport.transport
+    correlate.py /
+    lifecycle.py      [Task 4]  carry msg_id onto the correlated instruction / InstructionState
+    stream/
+      sweep.py        [Task 5]  add report_audit to _QUEUE_ORDER (the reserved slot)
+      state.py        [Task 4/5] entries carry msg_id; SettlementState.ingest report branch (self-join CorrelId->MsgId->SEME)
+      snapshot.py /
+      selfmetrics.py  [Task 6]  expose transport legs + attention sets + new anomaly kinds as swift_settlement_* series
+    reports.py        [Task 5]  ReportRecord(feedback, correl_id, put_time) + milestone_of() (uses Task 3 mapping)
+    observe.py        [Task 6]  Metrics gains transport legs + attention sets; _ANOMALY_KINDS += orphan-report, clock-skew
+    board.py          [Task 7]  Grafana panels: transport decomposition + attention sets (swift_settlement_*)
+    dashboard.py      [Task 7]  parallel HTML board update
+    directive.py      [Task 8]  Directive gains pickup_delay / withhold_pickup
+    serve_responder.py[Task 8]  per-instruction get+commit UOW (enables dwell + exact time-on-queue)
 
 docs/
-  coa-cod-streaming-findings.md  [Task 3]  the gating-spike findings note (cited doc research + live experiment)
+  coa-cod-streaming-findings.md  [Task 3]  gating-spike findings (cited doc research + live experiment)
 
 tests/swift/ , tests/            one test module per source module touched
 ```
-
-Each modified `src/gwlab/**/<mod>.py` has a sibling `tests/**/test_<mod>.py`. Files that change together live together.
 
 ---
 
@@ -63,256 +66,217 @@ Each modified `src/gwlab/**/<mod>.py` has a sibling `tests/**/test_<mod>.py`. Fi
 
 ### Task 1: Provision the `GW.SEC.REPORT` terminal ledger
 
-**Files:**
-- Modify: `ansible/roles/gw-sec-queues/defaults/main.yml`
-- Modify: `ansible/roles/gw-sec-queues/tasks/main.yml`
-- Test: `tests/test_gw_sec_report_queue.py` (renders/asserts the MQSC the role would apply)
+**Files:** Modify `ansible/roles/gw-sec-queues/defaults/main.yml`, `tasks/main.yml`; Test `tests/test_gw_sec_report_queue.py`.
 
-**Interfaces:**
-- Produces: a QLOCAL `GW.SEC.REPORT`, `CAPEXPRY({{ gw_sec_capexpry }})`, `MAXDEPTH({{ gw_sec_max_depth }})`, **no `STREAMQ`** (terminal ledger), named by a new `q_report` var (matching the `q_instruct`/`q_reply` convention) — the collector's third browse source (Task 5) and the reply target (Task 2).
+**Interfaces:** Produces a QLOCAL `GW.SEC.REPORT`, `CAPEXPRY({{ gw_sec_capexpry }})`, `MAXDEPTH({{ gw_sec_max_depth }})`, **no `STREAMQ`**, named by a new `q_report` var (matching `q_instruct`/`q_reply`) — the collector's third source (Task 5) and reply target (Task 2).
 
-- [ ] **Step 1: Write the failing test** — assert the role's rendered object set includes a non-streaming `GW.SEC.REPORT` with the SEC-horizon CAPEXPRY and is **absent** from `gw_sec_streams` (it must never stream).
+- [ ] **Step 1: Write the failing test**
 
 ```python
 def test_report_queue_is_terminal_capexpry_ledger():
-    objs = render_gw_sec_objects(defaults)           # helper over defaults/main.yml
+    objs = render_gw_sec_objects(defaults)
     rep = objs["GW.SEC.REPORT"]
-    assert rep["type"] == "QLOCAL"
-    assert rep["CAPEXPRY"] == defaults["gw_sec_capexpry"]     # 3-day horizon
-    assert "STREAMQ" not in rep                                # terminal: no stream copy
+    assert rep["type"] == "QLOCAL" and rep["CAPEXPRY"] == defaults["gw_sec_capexpry"]
+    assert "STREAMQ" not in rep
     assert "GW.SEC.REPORT" not in [live for live, _ in defaults["gw_sec_streams"]]
 ```
 
-- [ ] **Step 2: Run test to verify it fails** — `pytest tests/test_gw_sec_report_queue.py -v` → FAIL (queue absent).
-- [ ] **Step 3: Add the queue** — in `defaults/main.yml` add `q_report: "GW.SEC.REPORT"` and include it in the created-QLOCAL list (the same assert/verify path as the audit QLOCALs) but **not** in `gw_sec_streams`; in `tasks/main.yml` add it to the object loop.
-- [ ] **Step 4: Run test to verify it passes.**
+- [ ] **Step 2: Run to verify it fails** — `pytest tests/test_gw_sec_report_queue.py -v`.
+- [ ] **Step 3: Add** `q_report: "GW.SEC.REPORT"` to `defaults/main.yml`, include it in the created-QLOCAL list (not in `gw_sec_streams`); add to the `tasks/main.yml` object loop.
+- [ ] **Step 4: Run to verify it passes.**
 - [ ] **Step 5: Commit** — `vrg-commit --type feat --scope 105 --message "gw-sec-queues: GW.SEC.REPORT terminal report ledger"`.
 
-### Task 2: Report options on the outbound put + `feedback` on messages
+### Task 2: Report options on the existing put + `feedback` on messages
 
-**Files:**
-- Modify: `src/gwlab/messaging.py` (`Message`, `Messaging` protocol)
-- Modify: `src/gwlab/fake_messaging.py`, `src/gwlab/pymqi_messaging.py`
-- Create: `src/gwlab/swift/send.py`
-- Modify: `src/gwlab/swift/swiftconfig.py`
-- Test: `tests/test_messaging_reports.py`, `tests/swift/test_send.py`
+**Files:** Modify `src/gwlab/messaging.py`, `fake_messaging.py`, `pymqi_messaging.py`, `src/gwlab/swift/gateway_run.py`, `src/gwlab/swift/swiftconfig.py`; Test `tests/test_messaging_reports.py`, `tests/swift/test_gateway_run_reports.py`.
 
 **Interfaces:**
-- Produces:
-  - `Message(..., feedback: int | None = None)` — `None` for application messages, `MQFB_COA`/`MQFB_COD` for reports.
-  - `Messaging.put(queue, message, *, report_opts: ReportOpts | None = None)` where `ReportOpts = namedtuple("ReportOpts", "report reply_to_q reply_to_qmgr")`.
-  - `swiftconfig.SwiftQueueSet` gains `instruct: str = "GW.SEC.INSTRUCT"` (QALIAS) and `report_ledger: str = "GW.SEC.REPORT"`; a `request_reports: bool = True` field.
-  - `swift.send.send_instruction(messaging, queues, body, *, request_reports) -> bytes` — puts to `queues.instruct` (the QALIAS), returns the QM-minted `MsgId`; when `request_reports`, sets `Report = MQRO_COA | MQRO_COD`, `ReplyToQ = queues.report_ledger`, `ReplyToQMgr = <our qm>`.
-- Consumes: Task 1's `GW.SEC.REPORT`.
+- `Message(..., feedback: int | None = None)`; read in the `Message(...)` sites for `browse_new`/`browse`/`get`.
+- `Messaging.put(queue, message, *, report_opts: ReportOpts | None = None)`, `ReportOpts = namedtuple("ReportOpts","report reply_to_q reply_to_qmgr")`.
+- `SwiftQueueSet` gains `instruct: str = "GW.SEC.INSTRUCT"`, `report_ledger: str = "GW.SEC.REPORT"`, `request_reports: bool = True`.
+- `gateway_run.put_instructions` sets `report_opts` when `request_reports`.
 
-- [ ] **Step 1: Write the failing test (send sets report options through the QALIAS)**
+- [ ] **Step 1: Write the failing test**
 
 ```python
-def test_send_requests_coa_cod_through_qalias():
-    m = FakeMessaging()
-    q = SwiftQueueSet()                       # instruct="GW.SEC.INSTRUCT", report_ledger="GW.SEC.REPORT"
-    msg_id = send_instruction(m, q, INSTRUCTION_BODY, request_reports=True)
+def test_put_instructions_requests_coa_cod_when_enabled():
+    m = FakeMessaging(); q = SwiftQueueSet(request_reports=True)
+    put_instructions(m, q, [make_instruction(seme="ABC")])
     put = m.puts[-1]
-    assert put.queue == "GW.SEC.INSTRUCT"                 # QALIAS, not the audit queue
-    assert put.report_opts.report == MQRO_COA | MQRO_COD  # plain, no _WITH_DATA
+    assert put.queue == "GW.SEC.INSTRUCT"                    # the QALIAS
+    assert put.report_opts.report == MQRO_COA | MQRO_COD     # plain
     assert put.report_opts.reply_to_q == "GW.SEC.REPORT"
-    assert msg_id == put.message.msg_id                   # QM-minted id returned
 
-def test_send_without_reports_sets_no_options():
-    m = FakeMessaging(); q = SwiftQueueSet()
-    send_instruction(m, q, INSTRUCTION_BODY, request_reports=False)
+def test_put_instructions_no_reports_when_disabled():
+    m = FakeMessaging(); q = SwiftQueueSet(request_reports=False)
+    put_instructions(m, q, [make_instruction(seme="ABC")])
     assert m.puts[-1].report_opts is None
 ```
 
-- [ ] **Step 2: Run to verify it fails** — `pytest tests/swift/test_send.py -v` → FAIL (`send_instruction` undefined).
-- [ ] **Step 3: Implement** — add `feedback` to `Message`; extend `Messaging.put` + both impls to accept `report_opts` (fake records it; pymqi maps it to MQMD `Report`/`ReplyToQ`/`ReplyToQMgr`); add the config fields; write `send.send_instruction`.
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — add `feedback` to `Message`; extend `Messaging.put` + both impls (`fake` records `report_opts`; `pymqi` maps to MQMD `Report`/`ReplyToQ`/`ReplyToQMgr`); read `Feedback` into `Message` on `browse_new`/`browse`/`get`; add the config fields; wire `gateway_run.put_instructions` to pass `report_opts` when `request_reports`.
 - [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Add the `feedback`-on-browse test** — `FakeMessaging.enqueue_report(queue, correl_id, feedback, put_time)` yields a body-less `Message` with `feedback` set; a browse returns it.
-- [ ] **Step 6: Commit** — `--type feat --scope 105 --message "swift.send: request plain COA/COD through the GW.SEC.INSTRUCT QALIAS; feedback on Message"`.
+- [ ] **Step 5: SENT-accuracy** — change `put_instructions` to **commit per-instruction** (or stamp `put_time` at commit); test that each instruction's SENT is its own commit time.
+- [ ] **Step 6: `browse_new` report fixture** — `FakeMessaging.enqueue_report(queue, correl_id, feedback, put_time)` yields a body-less `Message` with `feedback`; served via `browse_new`.
+- [ ] **Step 7: Commit** — `--type feat --scope 105 --message "swift: request plain COA/COD on the gateway put; feedback on Message; per-instruction SENT"`.
 
-### Task 3: Gating spike — COA/COD × streaming-queue (doc research + live experiment)
+### Task 3: Gating spike — COA/COD × streaming-queue (doc + live experiment)
 
-**Files:**
-- Create: `docs/coa-cod-streaming-findings.md`
-- Test: `tests/test_coa_cod_findings.py` (self-consistency: every asserted milestone-mapping row cites a source or an experiment run id)
+**Files:** Create `docs/coa-cod-streaming-findings.md`; Test `tests/test_coa_cod_findings.py`.
 
-**Interfaces:**
-- Produces: the **milestone-mapping decision** consumed by Task 5 — which observed report (by generating QM / put-time) maps to `ARRIVED` vs `DELIVERED`, and how a local COA (if any) is discriminated. Encoded as a small table the findings doc cites and Task 5 imports as data.
-- Consumes: Tasks 1–2 (a report-requesting put through the real flow + a queue to observe).
+**Interfaces:** Produces the **milestone-mapping decision** consumed by Task 5 (which observed report → `ARRIVED`/`DELIVERED`; local-COA discrimination field), as a small cited table.
 
-> **Precondition:** the real end-to-end flow (§Global Constraints). Verify it first: an instruction put through `GW.SEC.INSTRUCT` actually round-trips to SVCQM and is destructively consumed. If #65 has not landed this, establish the QALIAS put (Task 2 already does the app side) and confirm the round-trip; a missing round-trip is a loud precondition failure, not a workaround.
+> **Precondition (now satisfied by #65):** the real flow exists (`gateway_run` → QALIAS → SVCQM → responder). Verify the round-trip first; a missing round-trip is a loud precondition failure.
 
-- [ ] **Step 1: Doc-research track** — from the cited IBM sources (spec §14), record what COA/COD generation is defined to do when the destination queue carries `STREAMQ`/MUSTDUP: local-queue COA on arrival? transmission-queue exclusion on the remote leg? descriptor-field propagation through the duplicate? Cite each; mark explicitly where the docs are silent.
-- [ ] **Step 2: Live-experiment track** — enable `request_reports` for **one** instruction against the live lab; capture exactly what lands on `GW.SEC.REPORT` (count, `Feedback`, generating QM, put-times) via `runmqsc`/`amqsbcg` browse. Record against the opening hypothesis (a COA per arrival — local audit queue + SVCQM landing queue — plus one COD).
-- [ ] **Step 3: Decide the milestone mapping** — write the mapping table (observed report → `ARRIVED`/`DELIVERED`, local-COA discrimination field) into the findings doc.
-- [ ] **Step 4: Self-consistency test** — `pytest tests/test_coa_cod_findings.py -v`: every mapping row has a citation id or an experiment-run id; no row is asserted from memory.
-- [ ] **Step 5: Go / no-go** — if the mechanism composes, proceed to Phase 1. **If the result is adverse** (no usable SVCQM COA/COD), record the well-characterised negative finding; downstream tasks are cut and the epic concludes at the retrospective (spec §4).
+- [ ] **Step 1: Doc-research track** — from the cited IBM sources (spec §14), record COA/COD behaviour under `STREAMQ`/MUSTDUP: local-queue COA? transmission-queue exclusion on the remote leg? descriptor propagation through the duplicate? Cite each; mark silences.
+- [ ] **Step 2: Live-experiment track** — enable `request_reports` for **one** instruction via `gateway_run` against the live lab; capture what lands on `GW.SEC.REPORT` (count, `Feedback`, generating QM, put-times) via `runmqsc`/`amqsbcg`. Record vs the opening hypothesis (a COA per arrival + one COD).
+- [ ] **Step 3: Decide the milestone mapping** — write the mapping table (observed report → `ARRIVED`/`DELIVERED`; local-COA discriminator) into the findings doc.
+- [ ] **Step 4: Self-consistency test** — every mapping row has a citation id or an experiment-run id.
+- [ ] **Step 5: Go / no-go** — proceed if it composes; else record the well-characterised negative finding, cut downstream tasks, conclude at the retrospective (spec §4).
 - [ ] **Step 6: Commit** — `--type docs --scope 105 --message "gating-spike findings: COA/COD x streaming-queue interaction"`.
 
 ---
 
 ## Phase 1 — Correlation plumbing (gated by Task 3 go)
 
-### Task 4: Thread `msg_id` through model → correlate → lifecycle
+### Task 4: Thread `msg_id` through the streaming path (+ batch parity)
 
-**Files:**
-- Modify: `src/gwlab/swift/model.py`, `collect.py`, `correlate.py`, `lifecycle.py`
-- Test: `tests/swift/test_model.py`, `test_correlate.py`, `test_lifecycle.py`
+**Files:** Modify `src/gwlab/swift/model.py`, `stream/state.py`, `stream/sweep.py`, `collect.py`, `correlate.py`, `lifecycle.py`; Test `tests/swift/test_model.py`, `tests/swift/stream/test_state_msgid.py`.
 
-**Interfaces:**
-- Produces: `SwiftMessage.msg_id: bytes | None`; `InstructionState.msg_id: bytes | None` (the instruction's MsgId, the transport join key for Task 5).
-- Consumes: nothing new (raw `Message.msg_id` already exists; today it is read only for anomaly labelling at `collect.py:92` and discarded).
+**Interfaces:** `SwiftMessage.msg_id: bytes | None`; the streaming instruction entry (`stream/state.py`) carries `msg_id`; `sweep` passes `Message.msg_id` (from `browse_new`) into the fold. Batch `InstructionState.msg_id` for parity.
 
-- [ ] **Step 1: Write the failing test** — a folded instruction exposes the originating MsgId.
+- [ ] **Step 1: Write the failing test** — an ingested instruction exposes its MsgId in the streaming state.
 
 ```python
-def test_instruction_state_carries_msg_id():
-    msg = SwiftMessage(mt="541", seme="ABC", rela=None, statuses=(), put_time=T0,
-                       is_instruction=True, is_confirmation=False, msg_id=b"MID-1")
-    state = fold(Correlated(instruction=msg, responses=()))
-    assert state.msg_id == b"MID-1"
+def test_settlement_state_entry_carries_msg_id():
+    st = SettlementState(horizon=H)
+    st.ingest(instruction_message(seme="ABC", msg_id=b"MID-1", put_time=T0))
+    assert st.entry_for("ABC").msg_id == b"MID-1"
 ```
 
-- [ ] **Step 2: Run to verify it fails** — FAIL (`SwiftMessage` has no `msg_id`).
-- [ ] **Step 3: Implement** — add `msg_id` to `SwiftMessage` (default `None`); in `collect._decode_and_parse` pass the browsed `message.msg_id` into the parsed instruction; carry it through `correlate` onto the `Correlated`/instruction and onto `InstructionState`.
-- [ ] **Step 4: Run to verify it passes** (all three test modules).
-- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift: carry instruction MsgId through model/correlate/lifecycle"`.
+- [ ] **Step 2: Run to verify it fails** (no `msg_id` on the entry).
+- [ ] **Step 3: Implement** — add `msg_id` to `SwiftMessage`; in `sweep`/`SettlementState.ingest` capture `Message.msg_id` onto the instruction entry and build a `msg_id → seme` index; thread `msg_id` through the batch `model`/`collect`/`correlate`/`lifecycle` for parity.
+- [ ] **Step 4: Run to verify it passes.**
+- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift: carry instruction MsgId through the streaming state (+ batch parity)"`.
 
-### Task 5: Report browse + MQMD-only handler (third collector source)
+### Task 5: Report ingest — third source + self-join in `SettlementState`
 
-**Files:**
-- Create: `src/gwlab/swift/reports.py`
-- Modify: `src/gwlab/swift/collect.py`
-- Test: `tests/swift/test_reports.py`, `test_collect_reports.py`
+**Files:** Create `src/gwlab/swift/reports.py`; Modify `stream/sweep.py`, `stream/state.py`, `collect.py`; Test `tests/swift/test_reports.py`, `tests/swift/stream/test_report_ingest.py`.
 
 **Interfaces:**
-- Produces:
-  - `reports.ReportRecord(correl_id: bytes, feedback: int, put_time: datetime)` and `reports.milestone_of(record) -> Literal["arrived","delivered"] | None` (using Task 3's mapping data).
-  - `collect.DayReport` gains `transport: dict[bytes, TransportTimeline]` keyed by instruction MsgId, where `TransportTimeline(sent, arrived, delivered)` (datetimes, `None` until observed).
-- Consumes: Task 3's milestone mapping; Task 4's `InstructionState.msg_id`; Task 1's `GW.SEC.REPORT`.
+- `reports.ReportRecord(correl_id, feedback, put_time)`; `reports.milestone_of(record) -> "arrived"|"delivered"|None` (Task 3 mapping).
+- `SettlementState` entry gains `TransportTimeline(sent, arrived, delivered)`; `ingest` routes a body-less report by `correl_id → (msg_id index) → seme` and sets the milestone. `DayReport.transport: dict[str, TransportTimeline]` keyed by SEME (batch parity).
 
-- [ ] **Step 1: Write the failing test** — a browsed COA then COD fold into the instruction's timeline by CorrelId.
+- [ ] **Step 1: Write the failing test**
 
 ```python
-def test_reports_fold_into_transport_timeline():
-    m = FakeMessaging()
-    m.enqueue_instruction("GW.SEC.INSTRUCT.AUDIT", seme="ABC", msg_id=b"MID-1", put_time=T0)
-    m.enqueue_report("GW.SEC.REPORT", correl_id=b"MID-1", feedback=MQFB_COA, put_time=T1)
-    m.enqueue_report("GW.SEC.REPORT", correl_id=b"MID-1", feedback=MQFB_COD, put_time=T2)
-    day = collect(m, SwiftQueueSet(), now=T3, horizon=H)
-    tl = day.transport[b"MID-1"]
+def test_report_folds_into_transport_timeline_via_self_join():
+    st = SettlementState(horizon=H)
+    st.ingest(instruction_message(seme="ABC", msg_id=b"MID-1", put_time=T0))
+    st.ingest(report_message(correl_id=b"MID-1", feedback=MQFB_COA, put_time=T1))
+    st.ingest(report_message(correl_id=b"MID-1", feedback=MQFB_COD, put_time=T2))
+    tl = st.entry_for("ABC").transport
     assert (tl.sent, tl.arrived, tl.delivered) == (T0, T1, T2)
 
 def test_report_is_not_tokenized():
-    m = FakeMessaging()
-    m.enqueue_report("GW.SEC.REPORT", correl_id=b"MID-x", feedback=MQFB_COA, put_time=T1)
-    day = collect(m, SwiftQueueSet(), now=T3, horizon=H)
-    assert not [a for a in day.anomalies if a.kind == "malformed"]   # body-less, never parsed
+    st = SettlementState(horizon=H)
+    st.ingest(report_message(correl_id=b"MID-x", feedback=MQFB_COA, put_time=T1))
+    assert not [a for a in st.report().anomalies if a.kind == "malformed"]
 ```
 
-- [ ] **Step 2: Run to verify it fails** — FAIL (`transport` absent; report queue not browsed).
-- [ ] **Step 3: Implement** — add a **third entry** to the collector browse loop for `queues.report_ledger` routed to an MQMD-only handler (`reports.ReportRecord`), **bypassing** `_decode_and_parse`; map each record to a milestone and set it on the instruction's `TransportTimeline` (seed `sent` from the instruction's `put_time`); add `transport` to `DayReport`.
+- [ ] **Step 2: Run to verify it fails.**
+- [ ] **Step 3: Implement** — add `report_audit` to `sweep._QUEUE_ORDER` (the reserved slot); in `SettlementState.ingest`, detect a body-less report (`feedback` set), map to a milestone, self-join via the `msg_id → seme` index (holding it in orphan-gating if the instruction is not yet seen, then re-joining), and set `TransportTimeline`. Mirror in the batch `collect.collect` loop + `DayReport.transport`.
 - [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Orphan-report test** — a report whose `correl_id` matches no instruction yields an `orphan-report` anomaly (added in Task 6), never a crash. (Assert the record is captured for Task 6 to classify.)
-- [ ] **Step 6: Commit** — `--type feat --scope 105 --message "swift.collect: browse GW.SEC.REPORT as a third source; fold COA/COD into per-instruction transport timelines"`.
+- [ ] **Step 5: Orphan-report test** — a report whose `correl_id` maps to no SEME (after the gating window) becomes an `orphan-report` anomaly (Task 6), never a crash.
+- [ ] **Step 6: Commit** — `--type feat --scope 105 --message "swift.stream: fold COA/COD into per-instruction transport timelines (third source, CorrelId->MsgId->SEME self-join)"`.
 
 ---
 
-## Phase 2 — Metrics, attention sets, dashboard
+## Phase 2 — Metrics, exposition, board
 
-### Task 6: Transport metrics + attention sets + anomalies
+### Task 6: Transport metrics + attention sets + anomalies (container + exposition)
 
-**Files:**
-- Modify: `src/gwlab/swift/observe.py`, `src/gwlab/swift/swiftconfig.py` (`Horizon.service_interval`)
-- Test: `tests/swift/test_observe_transport.py`
+**Files:** Modify `src/gwlab/swift/observe.py`, `swiftconfig.py` (`Horizon.service_interval`), `stream/snapshot.py`, `stream/selfmetrics.py`; Test `tests/swift/test_observe_transport.py`, `tests/swift/stream/test_transport_exposition.py`.
 
-**Interfaces:**
-- Produces: `observe.Metrics` gains `transport_legs: dict[str, LatencyStats]` (keys `sent->arrived`, `arrived->delivered`, `delivered->acknowledged`), `awaiting_coa: list`, `awaiting_cod: list` (the two attention sets); `_ANOMALY_KINDS` gains `"orphan-report"` and `"clock-skew"`.
-- Consumes: Task 5's `DayReport.transport`; the folded `acknowledged` `Hop.at` for the seam; `Horizon.service_interval` (a `timedelta`).
+**Interfaces:** `observe.Metrics` gains `transport_legs: dict[str, LatencyStats]` (keys `sent->arrived`, `arrived->delivered`, `delivered->acknowledged`), `awaiting_coa`, `awaiting_cod`; `_ANOMALY_KINDS += ("orphan-report","clock-skew")`; the streaming exposition emits `swift_settlement_transport_leg_seconds{leg=...}` and `swift_settlement_awaiting{stage=...}` series and the new anomaly label values. Consumes `Horizon.service_interval: timedelta`.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_transport_legs_computed_and_ascii_labelled():
+def test_transport_legs_ascii_and_time_on_queue_exact():
     legs = metrics(day, cfg).transport_legs
-    assert set(legs) == {"sent->arrived", "arrived->delivered", "delivered->acknowledged"}
+    assert set(legs) == {"sent->arrived","arrived->delivered","delivered->acknowledged"}
     assert legs["arrived->delivered"].mean == T2 - T1        # single-clock, exact
 
-def test_negative_delivery_latency_is_anomaly_not_metric():
-    # SENT (our clock) after ARRIVED (SVCQM clock) => skew
-    day = day_with(sent=T2, arrived=T1)                       # T1 < T2
-    mx = metrics(day, cfg)
-    assert any(a.kind == "clock-skew" for a in mx.anomalies)  # flagged
-    assert "sent->arrived" not in mx.transport_legs or mx.transport_legs["sent->arrived"].n == 0
+def test_negative_delivery_latency_is_clock_skew_anomaly():
+    mx = metrics(day_with(sent=T2, arrived=T1), cfg)          # T1 < T2
+    assert any(a.kind == "clock-skew" for a in mx.anomalies)
+    assert mx.transport_legs.get("sent->arrived", empty).n == 0
 
 def test_awaiting_cod_beyond_service_interval():
     day = day_with(arrived=T1, delivered=None, now=T1 + 2*cfg.horizon.service_interval)
-    assert day_instruction in metrics(day, cfg).awaiting_cod   # service-interval-high analog
+    assert seme in [i.seme for i in metrics(day, cfg).awaiting_cod]
 
-def test_orphan_report_flagged():
-    assert any(a.kind == "orphan-report" for a in metrics(day_with_orphan_report, cfg).anomalies)
+def test_transport_series_exposed():
+    text = render_exposition(snapshot_with_transport)
+    assert "swift_settlement_transport_leg_seconds" in text
+    assert 'leg="sent->arrived"' in text
 ```
 
 - [ ] **Step 2: Run to verify they fail.**
-- [ ] **Step 3: Implement** — compute the three legs on a **parallel path** (not via `_latencies`): `sent->arrived`, `arrived->delivered` from `DayReport.transport`; `delivered->acknowledged` by joining `delivered` to the folded `acknowledged` timestamp. Route a negative/backwards `sent->arrived` to a `clock-skew` anomaly and exclude it from the leg. Build `awaiting_coa`/`awaiting_cod` from timelines missing the next milestone past the threshold. Add the two anomaly kinds to `_ANOMALY_KINDS`; add `Horizon.service_interval`.
+- [ ] **Step 3: Implement** — compute the three legs on a **parallel path** (not `_latencies`): `sent->arrived`, `arrived->delivered` from the transport timelines; `delivered->acknowledged` by joining `delivered` to the folded `acknowledged` timestamp; route negative `sent->arrived` to a `clock-skew` anomaly and exclude it. Build `awaiting_coa`/`awaiting_cod` from timelines missing the next milestone past the threshold. Add the two anomaly kinds; add `Horizon.service_interval`. Emit the new series + anomaly labels from the exposition.
 - [ ] **Step 4: Run to verify they pass.**
-- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift.observe: transport legs (parallel path) + awaiting-COA/COD sets + clock-skew/orphan-report anomalies"`.
+- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift: transport legs (parallel path) + awaiting-COA/COD + clock-skew/orphan-report anomalies; Prometheus exposition"`.
 
-### Task 7: Dashboard — front-of-lifecycle decomposition
+### Task 7: Board — front-of-lifecycle decomposition (Grafana + HTML)
 
-**Files:**
-- Modify: `src/gwlab/swift/dashboard.py`
-- Test: `tests/swift/test_dashboard_transport.py`
+**Files:** Modify `src/gwlab/swift/board.py`, `dashboard.py`; Test `tests/swift/test_board_transport.py`, `tests/swift/test_dashboard_transport.py`.
 
-**Interfaces:**
-- Consumes: Task 6's `transport_legs`, `awaiting_coa`, `awaiting_cod`.
-- Produces: a transport panel rendered at the head of the lifecycle board, three sub-leg rows + the two attention sets, ASCII labels, and the anomaly kinds surfaced in the existing anomaly panel.
+**Interfaces:** Grafana panels querying `swift_settlement_transport_leg_seconds` / `swift_settlement_awaiting`; `sent->arrived` foregrounded; HTML `dashboard.py` parallel rows.
 
-- [ ] **Step 1: Write the failing test** — the rendered board contains a transport section decomposing `instructed->acknowledged` into the three sub-legs and shows the two attention-set counts.
+- [ ] **Step 1: Write the failing test** — the generated board JSON contains a transport panel foregrounding `sent->arrived` and shows the two attention sets.
 
 ```python
-def test_board_renders_transport_decomposition():
-    html = render_board(metrics(day, cfg))
-    assert "sent-&gt;arrived" in html and "arrived-&gt;delivered" in html
-    assert "delivered-&gt;acknowledged" in html
-    assert "awaiting COD" in html
+def test_grafana_board_has_transport_decomposition():
+    board = build_settlement_board(cfg)
+    titles = [p["title"] for p in board["panels"]]
+    assert any("delivery latency" in t.lower() or "sent->arrived" in t.lower() for t in titles)
+    exprs = panel_exprs(board)
+    assert any("swift_settlement_transport_leg_seconds" in e for e in exprs)
+    assert any("swift_settlement_awaiting" in e for e in exprs)
 ```
 
 - [ ] **Step 2: Run to verify it fails.**
-- [ ] **Step 3: Implement** — add a `_transport_panel` drawn from `transport_legs` + the attention sets, positioned before the existing latency panel; ensure `_anomaly_panel` iterates the extended `_ANOMALY_KINDS`.
+- [ ] **Step 3: Implement** — add a transport-decomposition panel group to `board.py` (delivery-latency panel foregrounded, then time-on-queue, then delivered->acknowledged, plus awaiting-COA/COD stat panels); update HTML `dashboard._latency_panel`/`_anomaly_panel` in parallel.
 - [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift.dashboard: front-of-lifecycle transport decomposition panel"`.
+- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift.board: front-of-lifecycle transport decomposition (Grafana + HTML)"`.
 
 ---
 
 ## Phase 3 — Condition injection
 
-### Task 8: Condition-injecting service side
+### Task 8: Pickup-delay / withhold + per-instruction responder commit
 
-**Files:**
-- Modify: `src/gwlab/swift/responder.py` and/or `src/gwlab/swift/simulation.py` (placement decided here per spec §8.1)
-- Test: `tests/swift/test_condition_injection.py`
+**Files:** Modify `src/gwlab/swift/directive.py`, `serve_responder.py` (and `responder_app.py`/`scheduler.py` as needed); Test `tests/swift/test_condition_injection.py`.
 
-**Interfaces:**
-- Produces: per-instruction injectable conditions — `pickup_delay`, `ack_delay`, `withhold_pickup` — applied by the responder, which **commits each get per-instruction** (so `arrived->delivered` is exact).
-- Consumes: Tasks 2–7 (a full report→metric path to observe the injected conditions through).
+**Interfaces:** `Directive` gains `pickup_delay: timedelta = 0`, `withhold_pickup: bool = False` (alongside the existing `delay_vector` ack timing). `serve_responder._drain_instructions` restructured to **per-instruction get+commit**, honouring `pickup_delay`/`withhold_pickup`.
 
-- [ ] **Step 1: Write the failing test** — an injected pickup delay produces a matching `arrived->delivered`, and a withheld pickup lands the instruction in `awaiting_cod`.
+- [ ] **Step 1: Write the failing test**
 
 ```python
 def test_pickup_delay_shows_as_time_on_queue():
-    day = run_sim(conditions={"ABC": Condition(pickup_delay=SECONDS(30))})
-    assert day.transport_for("ABC").time_on_queue == SECONDS(30)
+    day = run_live_sim(conditions={"ABC": Directive(pickup_delay=SECONDS(30))})
+    assert day.transport_for("ABC").time_on_queue == approx(SECONDS(30), abs=TOL)
 
 def test_withheld_pickup_lands_in_awaiting_cod():
-    day = run_sim(conditions={"ABC": Condition(withhold_pickup=True)}, now_after=LONG)
+    day = run_live_sim(conditions={"ABC": Directive(withhold_pickup=True)}, now_after=LONG)
     assert "ABC" in [i.seme for i in metrics(day, cfg).awaiting_cod]
 ```
 
 - [ ] **Step 2: Run to verify it fails.**
-- [ ] **Step 3: Implement** — add the condition hooks to the responder/sim; ensure per-instruction commit; decide and document placement (rework #65 sim vs a #105 load task) in the module docstring.
+- [ ] **Step 3: Implement** — add the two fields to `Directive`; restructure `_drain_instructions` to get+commit per instruction, applying `pickup_delay` (schedule the get) and `withhold_pickup` (skip the get) via the existing min-heap scheduler; ack-delay stays as-is (`delay_vector`).
 - [ ] **Step 4: Run to verify it passes.**
-- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift: condition-injecting service side (pickup/ack delay, withhold; per-instruction commit)"`.
+- [ ] **Step 5: Commit** — `--type feat --scope 105 --message "swift: pickup-delay/withhold injection + per-instruction responder commit"`.
 
 ---
 
@@ -320,25 +284,23 @@ def test_withheld_pickup_lands_in_awaiting_cod():
 
 ### Task 9 (validation): Live run + transparency proof + time-sync check
 
-**Files:**
-- Evidence recorded as a comment on issue #108 (operational task; not PR-workable).
+**Files:** Evidence recorded as a comment on issue #108 (operational; not PR-workable).
 
 **Acceptance (all required):**
-- [ ] **Step 1: Capture baseline** — `runmqsc` dump of our QM and SVCQM object/config state **before** the run.
-- [ ] **Step 2: Drive a day** — run the sim with `request_reports=True` and a spread of injected conditions.
-- [ ] **Step 3: Confirm reports** — COA + COD present on `GW.SEC.REPORT`, correlate to instructions by `MsgId`; the three sub-legs compute and render on the board.
-- [ ] **Step 4: Transparency proof** — `runmqsc` dump **after**; diff vs baseline shows **no change** on either QM. This diff is the headline acceptance.
-- [ ] **Step 5: Time-sync sanity check** — record what keeps the QM host clocks in sync (presumed default host-sync) and whether they are in fact synced; a drift finding is recorded loudly, not corrected.
+- [ ] **Step 1: Baseline** — `runmqsc` dump of our QM and SVCQM **before**.
+- [ ] **Step 2: Drive a day** — `gateway_run` with `request_reports=True` and a spread of injected conditions (pickup-delay, withhold, ack-delay).
+- [ ] **Step 3: Confirm reports** — COA + COD on `GW.SEC.REPORT`, correlate by `MsgId → SEME`; the three sub-legs compute and render on the Grafana board with `sent->arrived` foregrounded.
+- [ ] **Step 4: Transparency proof** — `runmqsc` dump **after**; diff vs baseline shows **no change** on either QM (headline acceptance).
+- [ ] **Step 5: Time-sync sanity check** — record what keeps the QM host clocks synced and whether they are; a drift finding is recorded loudly.
 - [ ] **Step 6: Record `Outcome: SUCCESS`** (or FAILURE with evidence) as the issue comment.
 
 ---
 
 ## Self-Review
 
-**Spec coverage:**
-- §3 report request → Task 2. §4 spike (doc + experiment, negative-result-OK) → Task 3. §5 report queue → Task 1; third browse source → Task 5. §6 MsgId join → Task 4. §7 three legs + attention sets → Task 6; §7.1 clock-skew handling → Task 6; per-instruction commit → Task 8. §8/§8.1 net-new items 1–8 → Tasks 1–7; prerequisite item 0 → Task 3 precondition/Task 2. §9 orphan/missing/loud → Tasks 5, 6, 2. §10 fake-harness reports → Task 2. §11 validation + time-sync → Task 9. §12 scope-out (no `_WITH_DATA`, deferred tertiary) → honoured (not built). §13 success criteria → Tasks 1–9.
-- Gap check: condition-injection placement is intentionally deferred to Task 8 (spec §8.1 sanctions this).
+**Spec coverage:** §2.1 (feed source #1) → Tasks 4/5. §3 report request → Task 2. §4 spike → Task 3. §5 report queue → Task 1. §6 msg_id join → Tasks 4/5. §7 three legs + attention sets → Task 6; §7.1 clock-skew → Task 6, SENT-accuracy → Task 2, per-instruction commit → Task 8, compression → noted (board labels real-time, Task 7). §8/§8.1 net-new 1–9 → Tasks 1–8. §9 orphan/missing/loud/skew → Tasks 5/6/2. §10 fake reports over browse_new → Task 2. §11 validation + time-sync → Task 9. §12 scope-out honoured. §13 success criteria → Tasks 1–9.
 
-**Placeholder scan:** no TBD/TODO; each code step carries concrete test/impl sketches at #65's plan altitude.
+**Placeholder scan:** no TBD/TODO; each code step has concrete test/impl sketches at #65's plan altitude.
 
-**Type consistency:** `msg_id: bytes | None` (Tasks 4–5); `feedback: int | None` (Task 2, used Tasks 5–6); `ReportRecord(correl_id, feedback, put_time)` (Task 5) consumed by `observe` (Task 6); `TransportTimeline(sent, arrived, delivered)` (Task 5) consumed by Tasks 6–8; leg keys `sent->arrived`/`arrived->delivered`/`delivered->acknowledged` consistent across Tasks 6–7.
+**Type consistency:** `msg_id: bytes | None` (Tasks 4–5); `feedback: int | None` (Task 2, used 5–6); `ReportRecord(correl_id, feedback, put_time)` (Task 5) consumed by Task 6; `TransportTimeline(sent, arrived, delivered)` (Task 5) consumed by Tasks 6–8; leg keys consistent Tasks 6–7; `Directive.pickup_delay/withhold_pickup` (Task 8) consumed by the responder.
+```
