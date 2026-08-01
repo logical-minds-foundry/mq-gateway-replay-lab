@@ -50,6 +50,36 @@ streaming-audit mechanism:
   (`epics/49-resilient-mq-gateway/`); SWIFT settlement in
   `epics/65-swift-settlement-tracking/` in this repo.
 
+### Streaming-audit gateway — strategic-risk findings (epic #105)
+
+Three deliverables assess the streaming-audit design — where *the counterparty
+does not receive what the application put; it receives the queue manager's
+streamed derivative*. Headline outcomes:
+
+- **MQ-native COA/COD are incompatible with a streaming-audit gateway.** Two
+  independent showstoppers: streaming **strips the report options** from the
+  streamed copy (no `ARRIVED`/`DELIVERED` report is ever generated at the
+  counterparty), and the single MQMD `ReplyToQ` is **already committed to SWIFT
+  business responses** (MT548), so reports cannot be isolated to a queue of our
+  own. Verdict: definitive NO-GO.
+- **The streamed copy is byte-/value-identical to the retained original in every
+  MQMD field except `Expiry`**, empirically confirmed on the live lab (one probe,
+  original vs. copy matched by `MsgId`). `Expiry` becomes `MQEI_UNLIMITED` on the
+  copy — the desired direction (the counterparty receives no expiry). `MsgId`,
+  origin/identity context, persistence, priority, CCSID (`1208`), and `ReplyToQMgr`
+  all measured identical.
+- **Design invariant to preserve:** **no `CAPEXPRY` on the stream target**
+  (`GW.SEC.INSTRUCT.REMOTE`) — that is what keeps the copy's expiry unlimited.
+
+Deliverables:
+
+- [`docs/coa-cod-streaming-findings.md`](docs/coa-cod-streaming-findings.md) —
+  the COA/COD × streaming gating spike (definitive NO-GO, two showstoppers).
+- [`docs/mqmd-streaming-fidelity.md`](docs/mqmd-streaming-fidelity.md) — the
+  field-by-field MQMD fidelity account, with the live-lab measured diff.
+- [`docs/gateway-design-risk-register.md`](docs/gateway-design-risk-register.md) —
+  the living strategic-risk register, updated with the measured evidence.
+
 ## Getting Started
 
 Sessions run inside the shared lab VM. Validate with `vrg-container-run -- vrg-validate`.
