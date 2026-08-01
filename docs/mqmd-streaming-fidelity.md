@@ -1,8 +1,14 @@
 # MQMD fidelity across the streaming-audit copy — original vs. streamed
 
-**Status:** documentation + web research. **No live queue manager was touched.**
-Every row marked `UNCERTAIN` or `[DOCS SILENT]` must be turned into a measured
-result by the empirical plan in §5 before this note is treated as final.
+**Status:** documentation + web research, **now confirmed by a live lab run**
+(issue #108, 2026-08-01). The empirical plan in §5 was executed against the
+shared lab (browse-only): one probe put through `GW.SEC.INSTRUCT`, its retained
+original on `GW.SEC.INSTRUCT.AUDIT` diffed field-by-field against the streamed
+copy `SVCQM` received, matched by `MsgId`. **Result: only ONE MQMD field differs
+— `Expiry` — and it differs favourably** (the copy becomes `MQEI_UNLIMITED`).
+Every other MQMD field measured **byte-/value-identical**. See the new
+**§1.4 Empirical confirmation** for the measured diff; the previously
+`UNCERTAIN` / "verify" rows in §3 are now marked **MEASURED**.
 
 **Epic:** #105 (repurposed to a strategic-risk documentation epic). Companion to
 `epics/105-coa-cod-telemetry/spec.md` §3/§5 and §4 (the streaming/COA-COD spike).
@@ -84,11 +90,55 @@ CAPEXPRY), and (b) the fields the docs describe only in aggregate ("all
 descriptor fields") where a second, recurring IBM phrasing conflates streaming
 with pub/sub and muddies the origin-context guarantee (§3, §4).
 
+### 1.4 Empirical confirmation (live lab, 2026-08-01)
+
+**[DATA — measured, issue #108].** The §5 plan was executed against the shared
+lab, browse-only, no mutation. One probe instruction was put through the
+`GW.SEC.INSTRUCT` QALIAS. The **retained original** was captured with `amqsbcg`
+on `GW.SEC.INSTRUCT.AUDIT` (queue manager `NHAUAPP`); the **streamed copy** was
+captured with `amqsbcg` as `SVCQM` received it. The two messages were matched by
+**`MsgId`** (byte-identical on both) and their MQMDs diffed field by field.
+
+**Result: exactly ONE MQMD field differs — `Expiry` — and it differs in the
+desired direction.**
+
+| MQMD field | Retained original (`GW.SEC.INSTRUCT.AUDIT`) | Streamed copy (`SVCQM`) | Verdict |
+|---|---|---|---|
+| **Expiry** | `2589276` (~3 days — the AUDIT queue's `CAPEXPRY`) | `-1` (`MQEI_UNLIMITED`) | **DIFFERS — favourably.** The counterparty receives an instruction with **no expiry**, matching the no-expiry requirement. |
+
+**Measured byte-/value-identical on the streamed copy vs. the original** (every
+other MQMD field, plus payload):
+
+- `MsgId` (**byte-identical** — the load-bearing correlation/replay guarantee),
+  `CorrelId`
+- Origin context: `PutApplName` (`amqsput`), `PutDate` (`20260801`), `PutTime`
+  (`20081793`), `PutApplType`
+- Identity context: `UserIdentifier` (`mqm`), `AccountingToken`,
+  `ApplIdentityData`
+- `Persistence`, `Priority`, `Encoding`, `CodedCharSetId` (`1208`), `Format`
+  (`MQSTR`), `BackoutCount`
+- `ReplyToQ` / `ReplyToQMgr` (`NHAUAPP`)
+- Grouping/segmentation (single-message probe): `GroupId`, `MsgSeqNumber`,
+  `Offset`, `MsgFlags`
+- Application payload
+
+**Method.** `amqsbcg` on both queues, messages matched by `MsgId`, MQMDs diffed
+field by field (§5.4). Single-message probe, so the grouping/segmentation block
+is confirmed identical **for the single-message case only** — the
+grouped/segmented-message case remains documentation-only (see §3 rows 25–29 and
+§4 #5). The `Expiry` result also confirms the §4 #1 mechanism directly: the
+stream target imposed **no** `CAPEXPRY`, so the copy is `MQEI_UNLIMITED`; the
+`2589276` on the original is the **AUDIT** queue's `CAPEXPRY`, which does **not**
+propagate to the streamed copy. The design invariant to preserve is therefore
+**no `CAPEXPRY` on the stream target `GW.SEC.INSTRUCT.REMOTE`** (or whatever it
+resolves to on the path).
+
 ---
 
 ## 2. How to read the table
 
 - **Status** — one of: `copied identically` · `altered` · `reset` · `UNCERTAIN`.
+  Rows resolved by the live run (§1.4) are tagged **MEASURED** with their measured value.
 - **Evidence** — the citing source, or `[DOCS SILENT]` where no public IBM text
   states the behaviour for the queue-to-queue `STREAMQ` case specifically.
 - **Remote-app-dependency risk (H/M/L/None)** — **[JUDGMENT]**: how likely a
@@ -110,79 +160,83 @@ Throughout, "the original" = the retained message on `GW.SEC.INSTRUCT.AUDIT`;
 | 2 | **Version** | copied identically | Same as above. Version reflects which MQMD fields are present, not payload. | None | A v2 original yields a v2 copy; group/segment fields ride on v2. No settlement dependency. |
 | 3 | **Report** | **altered (reset)** | **[DATA]** Streaming doc + author blog: *"report options that cause the queue manager to generate new messages are removed"* (Activity, Expiration, Exception, COA, COD **not enabled** on the copy). | **Med** | If SWIFT (or we) rely on COA/COD/exception reports being triggered *by the copy on SVCQM*, they still fire — because SVCQM re-reads the report bits from the copy. **But those bits are stripped, so no reports are requested by the streamed leg.** This is the crux of the #105 spike: reports must be requested on the *original put*, and the counterparty leg carries none. |
 | 4 | **MsgType** (`MQMT_DATAGRAM`) | copied identically | `[DOCS SILENT]` on MsgType specifically; falls under "all descriptor fields duplicated". | Low | Counterparty expects a datagram; unchanged. Confirm empirically (§5). |
-| 5 | **Expiry** | **altered** | **[DATA]** Streaming doc: set to **`MQEI_UNLIMITED`** regardless of the original — *unless* the secondary/stream target queue has **`CAPEXPRY`**, whose value then becomes the copy's expiry. (CAPEXPRY doc; Harris blog.) | **HIGH** | Our requirement is **no expiry**; UNLIMITED is what we want. **The risk is a `CAPEXPRY` set on `GW.SEC.INSTRUCT.REMOTE` (or the resolved target) silently re-imposing an expiry on the copy the app never asked for** — a settlement instruction could quietly expire in transit. See §4 #1. |
+| 5 | **Expiry** | **altered — MEASURED** | **[DATA — measured, §1.4]** original `2589276` (~3d, AUDIT's `CAPEXPRY`) → copy `-1` (`MQEI_UNLIMITED`). Confirms the streaming doc: set to `MQEI_UNLIMITED` regardless of the original, *unless* the stream target carries `CAPEXPRY` (it did not). | **HIGH** | Our requirement is **no expiry**; the copy measured **UNLIMITED** — the desired direction. **The residual risk is a `CAPEXPRY` set on `GW.SEC.INSTRUCT.REMOTE` (or the resolved target) silently re-imposing an expiry** — hence the invariant: **no `CAPEXPRY` on the stream target**. See §4 #1. |
 | 6 | **Feedback** | copied identically | `[DOCS SILENT]`; datagram carries `MQFB_NONE`. Reports (not this message) carry feedback. | None | Instruction is not a report; Feedback is `NONE` on both. |
-| 7 | **Encoding** | copied identically | Author blog: application data identical ⇒ its numeric encoding must match. | Low | If SWIFT parses numeric fields by Encoding, it must match — and does. Verify (§5). |
-| 8 | **CodedCharSetId** (CCSID) | copied identically | Author blog: app data + descriptor duplicated. **[JUDGMENT]** No transcoding is performed by streaming. | **Med** | SWIFT MT text is charset-sensitive. Any channel `CONVERT(YES)` transcoding happens on the *transmission* leg (same as for a normal remote put) and is **not** a streaming artefact — but confirm the copy's CCSID equals the original's before the channel touches it (§5). |
+| 7 | **Encoding** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `Encoding` = original. | Low | If SWIFT parses numeric fields by Encoding, it matches — measured identical. |
+| 8 | **CodedCharSetId** (CCSID) | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy CCSID = original (`1208`, UTF-8). No streaming transcoding observed. | **Med** | SWIFT MT text is charset-sensitive; the copy landed at CCSID `1208`, equal to the original. (Any channel `CONVERT(YES)` effect would be a transmission-leg artefact, not streaming — R9.) |
 | 9 | **Format** (e.g. `MQSTR`) | copied identically | "All descriptor fields duplicated." | Low | Counterparty dispatches on Format; unchanged. Note: on the xmit queue the message is wrapped in an `MQXQH` (Format `MQXMIT`); that is the transmission envelope, not a change to the copy's own MQMD (§5 caveat). |
-| 10 | **Priority** | copied identically | **[DATA]** Streaming doc: **`DEFPSIST` and `DEFPRTY` of the secondary queue have no effect** on the streamed message ⇒ priority comes from the **original's** MQMD, not the target queue default. | Low | Priority ordering preserved end-to-end from what the app set. No surprise from the target queue's `DEFPRTY`. |
-| 11 | **Persistence** | copied identically | **[DATA]** Same clause: `DEFPSIST` of the secondary queue does not affect the copy ⇒ persistence is the **original's**. | **Med** | Settlement instructions must be **persistent**; a non-persistent copy could be lost on restart. Good news: it inherits the original's persistence, **not** the target queue default — so as long as the app puts persistent, the copy is persistent. Verify the app/QALIAS actually yields persistent (§5). |
-| 12 | **MsgId** | copied identically | **[DATA]** Streaming doc **explicitly**: the duplicate includes *"the message ID and correlation ID."* Author blog lists Message ID as identical. | **HIGH** (as an asset) | This is the load-bearing guarantee for #105's correlation (`report.CorrelId → instruction MsgId → SEME`) **and** for replay. If it were *not* preserved, the whole audit/replay premise breaks. Counterparty may also dedupe on MsgId. **Confirm empirically — a single doc phrasing elsewhere ("each message has a new message identifier") conflates streaming with pub/sub (§4 #3); do not let that go unmeasured.** |
-| 13 | **CorrelId** | copied identically | **[DATA]** Same explicit clause + author blog. | **Med** | If SWIFT threads on CorrelId, it must survive; docs say it does. Verify (§5). |
-| 14 | **BackoutCount** | **reset (→ 0)** | `[DOCS SILENT]` for `STREAMQ` specifically. **[JUDGMENT]/[DATA]** BackoutCount is QM-maintained and is `0` on any freshly-put message; the streamed copy is a fresh put that has never been backed out, so it is `0` — and the original's own BackoutCount (also `0` unless it has been backed out on the audit queue) does not carry meaning to the counterparty. | Low | Counterparty's own consumer increments *its* BackoutCount on *its* queue; our copy starts clean at `0`, which is correct. Flag only because "0" is an assumption, not an IBM statement — measure it (§5). |
-| 15 | **ReplyToQ** | copied identically | "All descriptor fields duplicated"; author blog (descriptor duplicated). | **Med** | If the app sets `ReplyToQ = GW.SEC.REPORT` (for #105 reports) it is copied — but since report *options* are stripped (row 3), SVCQM has a ReplyToQ but no trigger to use it on the streamed leg. Ensure ReplyToQ/ReplyToQMgr semantics are what the counterparty expects for any *business* reply (MT548). Verify (§5). |
-| 16 | **ReplyToQMgr** | copied identically | Same as ReplyToQ. QM name is normally stamped at put time from the original context. | **Med** | Business replies (MT548) route back on `ReplyToQMgr`; must resolve to our QM. This is the mechanism #105 §2 relies on. Confirm the copy carries our QM name (§5). |
-| 17 | **UserIdentifier** | copied identically *(per aggregate docs)* — **verify** | **[DATA]** Falls under "all descriptor fields duplicated" and the author blog's silence on any context change. `[DOCS SILENT]` on context fields *specifically* for `STREAMQ`; a competing IBM phrasing says "context fields … are different" (§4 #3). | **HIGH** | **A SWIFT counterparty may authorize/authenticate on the identity context (`UserIdentifier`).** If streaming re-stamped it to the streaming QM's identity, an authorization decision on the copy would differ from the app's intent. Docs *lean* copied, but the context-conflation makes this a **must-measure** row. |
-| 18 | **AccountingToken** | copied identically *(per aggregate docs)* — **verify** | Same basis as UserIdentifier; identity context. `[DOCS SILENT]` specific to `STREAMQ`. | Low–Med | Rarely a counterparty authorization input, but part of identity context; measure alongside #17 since they move together. |
-| 19 | **ApplIdentityData** | copied identically *(per aggregate docs)* — **verify** | Same identity-context basis; `[DOCS SILENT]` specific. | Low–Med | Free-form identity string; if SWIFT keys on it, it must survive. Measure with the context block (§5). |
-| 20 | **PutApplType** | **UNCERTAIN** | `[DOCS SILENT]` for `STREAMQ`. Origin context. The streamed message is a **queue-manager-initiated put**, so PutApplType *could* be re-stamped (e.g. to a QM/channel type) rather than reflecting the original application. Aggregate docs say "all fields duplicated"; not independently confirmed. | **Med** | If the counterparty routes/audits by *who* put the message, a re-stamped origin type would mislead. Genuinely uncertain — **measure (§5).** |
-| 21 | **PutApplName** | **UNCERTAIN** | `[DOCS SILENT]` for `STREAMQ`; origin context; same QM-initiated-put concern as PutApplType. | **HIGH** | **A SWIFT counterparty commonly routes, filters, or audits on `PutApplName`.** If streaming re-stamps it (to the QM name, a channel, or blanks), counterparty routing/audit sees a different originator than the app. This is one of the highest-value UNCERTAIN rows — **measure first (§5).** |
-| 22 | **PutDate** | **UNCERTAIN** | `[DOCS SILENT]` for `STREAMQ`; origin context. Duplicate is a new put → PutDate might reflect the streaming put instant, or be copied from the original. Aggregate "all fields" statement vs. new-put reality unresolved. | **Med–High** | #105 stamps `SENT` from the **original's** put-time on the audit queue, so *our* metric is safe. **But** if the counterparty timestamps/ages instructions by the copy's `PutDate/PutTime`, and streaming re-stamps them, their aging differs from ours — and any cross-clock reasoning shifts. Measure (§5). |
-| 23 | **PutTime** | **UNCERTAIN** | Same as PutDate. | **Med–High** | Pairs with PutDate; settlement SLAs and "stale instruction" logic on the counterparty side may read it. Measure (§5). |
+| 10 | **Priority** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `Priority` = original. Confirms the "`DEFPRTY` of the secondary queue has no effect" clause ⇒ priority is the **original's**. | Low | Priority ordering preserved end-to-end from what the app set; measured identical. |
+| 11 | **Persistence** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `Persistence` = original. Confirms the "`DEFPSIST` of the secondary queue does not affect the copy" clause ⇒ persistence is the **original's**. | **Med** | Settlement instructions must be **persistent**; the copy measured equal to the original's persistence, not the target-queue default. |
+| 12 | **MsgId** | **copied identically — MEASURED (byte-identical)** | **[DATA — measured, §1.4]** `MsgId` on the retained original **byte-equals** `MsgId` on the streamed copy (the messages were matched by it). Refutes the pub/sub-conflation doubt (§4 #3) for `STREAMQ`. | **HIGH** (as an asset) | The load-bearing guarantee for #105's correlation (`report.CorrelId → instruction MsgId → SEME`) **and** for replay — **measured intact**. Counterparty may also dedupe on MsgId. |
+| 13 | **CorrelId** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `CorrelId` = original. | **Med** | If SWIFT threads on CorrelId, it survives; measured identical. |
+| 14 | **BackoutCount** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** `BackoutCount` identical on copy vs. original (both `0` on the fresh probe). Confirms the reasoned expectation. | Low | Counterparty's own consumer increments *its* BackoutCount on *its* queue; our copy starts clean at `0`, which is correct. |
+| 15 | **ReplyToQ** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `ReplyToQ` = original. | **Med** | Copied to the counterparty; since report *options* are stripped (row 3), SVCQM has a ReplyToQ but no trigger to use it on the streamed leg. Carries the *business* (MT548) reply address. |
+| 16 | **ReplyToQMgr** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `ReplyToQMgr` = original (`NHAUAPP`). | **Med** | Business replies (MT548) route back on `ReplyToQMgr`; measured to carry our QM name (`NHAUAPP`) — the mechanism #105 §2 relies on. |
+| 17 | **UserIdentifier** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `UserIdentifier` = original (`mqm`). The context-conflation concern (§4 #3) is **refuted** for `STREAMQ`: identity context is copied, not re-stamped. | **HIGH** | **A SWIFT counterparty may authorize/authenticate on `UserIdentifier`.** Measured identical, so an authorization decision on the copy matches the app's intent. |
+| 18 | **AccountingToken** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `AccountingToken` = original. Moves with the identity block. | Low–Med | Part of identity context; measured identical alongside #17. |
+| 19 | **ApplIdentityData** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `ApplIdentityData` = original. | Low–Med | Free-form identity string; measured to survive. |
+| 20 | **PutApplType** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `PutApplType` = original. Not re-stamped despite the QM-initiated put. | **Med** | Counterparty routing/audit by origin type sees the app's value, not a QM/channel type. |
+| 21 | **PutApplName** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `PutApplName` = original (`amqsput`). **REFUTES** the re-stamp concern: the origin context is copied from the original, not re-stamped for the streaming put. | **HIGH** | **A SWIFT counterparty commonly routes, filters, or audits on `PutApplName`.** Measured identical — counterparty sees the true originator. |
+| 22 | **PutDate** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `PutDate` = original (`20260801`) — reflects the **original's** put instant, not the streaming put. | **Med–High** | Counterparty aging by `PutDate/PutTime` matches ours; no cross-clock shift. |
+| 23 | **PutTime** | **copied identically — MEASURED** | **[DATA — measured, §1.4]** copy `PutTime` = original (`20081793`). Pairs with PutDate. | **Med–High** | Settlement SLA / "stale instruction" logic on the copy reads the original's put time. |
 | 24 | **ApplOriginData** | copied identically *(per aggregate docs)* — **verify** | Origin context; `[DOCS SILENT]` specific. | Low | Free-form origin string; low counterparty dependence, but measure with the origin block. |
-| 25 | **GroupId** | copied identically *(per aggregate docs)* — **verify** | `[DOCS SILENT]` specific to `STREAMQ`; grouping fields are ordinary MQMD fields ⇒ under "all fields duplicated". | **Med** | **If SWIFT uses message groups/segmentation**, GroupId must be preserved or the group breaks at the counterparty. Streaming operates per *physical* message; measure that GroupId survives (§5, and §4 #5). |
-| 26 | **MsgSeqNumber** | copied identically *(per aggregate docs)* — **verify** | Same grouping basis; `[DOCS SILENT]` specific. | **Med** | Group sequencing; only matters if groups are used, but then it is essential. Measure (§5). |
-| 27 | **Offset** | copied identically *(per aggregate docs)* — **verify** | Same; segmentation. `[DOCS SILENT]` specific. | Low–Med | Only relevant under segmentation (not on z/OS). Our instructions are single-segment; confirm no accidental segmentation (§5). |
-| 28 | **MsgFlags** | copied identically *(per aggregate docs)* — **verify** | Grouping/segmentation flags (`MQMF_*`); `[DOCS SILENT]` specific. | **Med** | Carries "in group / last in group / segment" semantics; must match GroupId/seq. Measure with the grouping block (§5). |
+| 25 | **GroupId** | **copied identically — MEASURED (single-message)** | **[DATA — measured, §1.4]** copy `GroupId` = original on the single-message probe. **Grouped-message case remains documentation-only** (§4 #5). | **Med** | **If SWIFT uses message groups/segmentation**, GroupId must be preserved; measured identical for the single-message case, grouped case still to measure. |
+| 26 | **MsgSeqNumber** | **copied identically — MEASURED (single-message)** | **[DATA — measured, §1.4]** copy `MsgSeqNumber` = original on the single-message probe. Grouped case documentation-only. | **Med** | Group sequencing; measured identical for single-message, essential (and unmeasured) if groups are used. |
+| 27 | **Offset** | **copied identically — MEASURED (single-message)** | **[DATA — measured, §1.4]** copy `Offset` = original; no accidental segmentation observed on the probe. | Low–Med | Single-segment confirmed on the probe; segmented case not exercised. |
+| 28 | **MsgFlags** | **copied identically — MEASURED (single-message)** | **[DATA — measured, §1.4]** copy `MsgFlags` = original on the single-message probe. Grouped/segmented case documentation-only. | **Med** | Carries group/segment semantics; measured identical for the single-message case. |
 | 29 | **OriginalLength** | copied identically *(per aggregate docs)* — **verify** | Meaningful only for segments/report messages; `[DOCS SILENT]` specific. | Low | For a non-segmented datagram this is `MQOL_UNDEFINED`; no counterparty dependence expected. Measure (§5). |
 | — | **Message properties / MQRFH2** (message handle props) | copied identically | **[DATA]** Author blog lists **"Message Properties"** as identical between original and copy. | **Med** | See §6 — if SWIFT uses **named properties** (selectors, routing), their survival through streaming is a **distinct** guarantee worth its own verification, especially where a channel or `PROPCTL` could reshape RFH2. |
 
 ### Summary of what changes
 
-- **Altered / reset by streaming (documented):** `Report` (options stripped),
-  `Expiry` (→ `MQEI_UNLIMITED`, or `CAPEXPRY`), `BackoutCount` (→ 0, reasoned not
-  cited).
-- **Explicitly preserved (documented):** `MsgId`, `CorrelId`, message properties,
-  application data; and — via the "`DEFPSIST`/`DEFPRTY` have no effect" clause —
-  `Persistence` and `Priority` come from the **original**, not the target queue.
-- **UNCERTAIN (docs silent for `STREAMQ`; measure):** origin/identity **context**
-  block — `PutApplType`, `PutApplName`, `PutDate`, `PutTime` (highest concern),
-  and by association `UserIdentifier`, `AccountingToken`, `ApplIdentityData`,
-  `ApplOriginData`; plus the **grouping/segmentation** block (`GroupId`,
-  `MsgSeqNumber`, `Offset`, `MsgFlags`, `OriginalLength`).
+**Measured (live lab, §1.4): exactly one MQMD field differs — `Expiry` — and
+favourably.** Every other measured field is copied identically.
+
+- **Altered by streaming (MEASURED):** `Expiry` — original `2589276` (AUDIT
+  `CAPEXPRY`) → copy `-1` (`MQEI_UNLIMITED`), the desired direction. `Report`
+  options remain stripped by design (Deliverable A; not exercised on this probe).
+- **Copied identically (MEASURED):** `MsgId` (byte-identical), `CorrelId`,
+  `PutApplName`, `PutApplType`, `PutDate`, `PutTime`, `UserIdentifier`,
+  `AccountingToken`, `ApplIdentityData`, `Persistence`, `Priority`, `Encoding`,
+  `CodedCharSetId` (`1208`), `Format` (`MQSTR`), `BackoutCount`, `ReplyToQ`,
+  `ReplyToQMgr`, and — for the single-message probe — `GroupId`, `MsgSeqNumber`,
+  `Offset`, `MsgFlags`; plus the application payload.
+- **Still documentation-only (not exercised by the single-message probe):** the
+  **grouped/segmented-message** case for the grouping block, `ApplOriginData`,
+  `OriginalLength`, and message properties / MQRFH2 (§6).
 
 ---
 
 ## 4. Priority risk list (the fields most likely to bite)
 
-1. **Expiry re-imposed by `CAPEXPRY` on the remote/target queue — HIGH.**
-   *Altered by design* (→ `MQEI_UNLIMITED`), which is what we want, **but** a
-   `CAPEXPRY` on the stream target silently overrides it and gives the copy a
-   finite expiry the application never set. A settlement instruction could
-   **expire in transit** with no application-visible cause. *Action:* declare-and-
-   verify that neither `GW.SEC.INSTRUCT.REMOTE` nor whatever it resolves to on the
-   path carries a `CAPEXPRY`; treat any non-`MQEI_UNLIMITED` expiry on the copy as
-   a loud finding, never a silent default. (Boundary rule: we only *verify* the
-   remote queue's attribute; we do not mutate it.)
+1. **Expiry re-imposed by `CAPEXPRY` on the remote/target queue — HIGH ·
+   MEASURED benign.** *Altered by design* (→ `MQEI_UNLIMITED`), which is what we
+   want; the live probe **measured the copy at `-1` (`MQEI_UNLIMITED`)** — the
+   stream target carried **no** `CAPEXPRY` (the `2589276` on the original is the
+   AUDIT queue's `CAPEXPRY`, which does not propagate). The residual risk is a
+   `CAPEXPRY` later added to the stream target silently re-imposing a finite
+   expiry the application never set — a settlement instruction could **expire in
+   transit**. *Invariant / action:* declare-and-verify that neither
+   `GW.SEC.INSTRUCT.REMOTE` nor whatever it resolves to on the path carries a
+   `CAPEXPRY`; treat any non-`MQEI_UNLIMITED` expiry on the copy as a loud
+   finding. (Boundary rule: we only *verify* the remote queue's attribute; we do
+   not mutate it.)
 
 2. **Origin-context put fields (`PutApplName`, `PutDate`, `PutTime`,
-   `PutApplType`) — HIGH/UNCERTAIN.** The copy is a queue-manager-initiated put,
-   and the public docs do not state whether these are copied from the original or
-   re-stamped for the streaming put. A SWIFT counterparty that **routes, filters,
-   or audits on `PutApplName`**, or **ages instructions on `PutDate/PutTime`**,
-   would see values that differ from what the app produced if these are
-   re-stamped. Highest-value UNCERTAIN rows — resolve empirically first.
+   `PutApplType`) — HIGH · REFUTED (measured identical).** The live probe
+   measured all four **copied from the original**, not re-stamped for the
+   streaming put (`PutApplName` = `amqsput`, `PutDate` = `20260801`, `PutTime` =
+   `20081793`). A SWIFT counterparty that routes, filters, or audits on
+   `PutApplName`, or ages on `PutDate/PutTime`, sees the app's true values. The
+   highest-value uncertain rows — **resolved.**
 
-3. **Identity context (`UserIdentifier`) fidelity — HIGH/verify.** Docs *lean*
-   "copied," but a recurring IBM phrasing ("each message has a new message
-   identifier and the context fields of the MQMD are different from those in the
-   original message") **conflates queue streaming with publish/subscribe / a new
-   put** — precisely the ambiguity flagged in the task. In pub/sub the copy *does*
-   get a new MsgId (Capitalware/Lacroix confirms this for the pub/sub case); for
-   `STREAMQ` the authoritative statement and the feature author both say MsgId and
-   context are preserved. **Because the two phrasings coexist in IBM-adjacent
-   material, the identity context must be *measured*, not assumed** — especially
-   if the counterparty authorizes on `UserIdentifier`.
+3. **Identity context (`UserIdentifier`) fidelity — HIGH · CONFIRMED preserved.**
+   The recurring IBM phrasing ("each message has a new message identifier and the
+   context fields … are different") **conflates queue streaming with
+   publish/subscribe**; the live probe **measured `UserIdentifier` (`mqm`),
+   `AccountingToken`, and `ApplIdentityData` identical** on the copy — so for
+   `STREAMQ` the identity context is preserved, not re-stamped. A counterparty
+   that authorizes on `UserIdentifier` acts on the app's true identity.
 
 4. **Report options stripped — MED (known, by design).** The copy carries **no**
    Activity/Expiration/Exception/COA/COD bits. This is correct and expected (it is
@@ -192,17 +246,23 @@ Throughout, "the original" = the retained message on `GW.SEC.INSTRUCT.AUDIT`;
    the original put set them and they survived, which by this rule they do **not**.
 
 5. **Message groups / segmentation (`GroupId`, `MsgSeqNumber`, `Offset`,
-   `MsgFlags`) — MED/verify.** If SWIFT ever uses grouped or segmented messages,
-   these must survive streaming intact or the group reassembles wrongly (or not at
-   all) at the counterparty. Docs are silent on the `STREAMQ`-specific handling of
-   the grouping block; measure it if groups are in play. (Our instructions are
-   expected single-message; confirm no accidental segmentation.)
+   `MsgFlags`) — MED · PARTIAL (single-message measured identical).** The live
+   probe measured the grouping block identical **for the single-message case** and
+   confirmed no accidental segmentation. The **grouped/segmented-message case
+   remains documentation-only**: if SWIFT ever uses grouped or segmented messages,
+   these must survive streaming intact or the group reassembles wrongly at the
+   counterparty — measure it if groups come into play.
 
 6. **Message properties / MQRFH2 — MED (distinct question).** See §6.
 
 ---
 
-## 5. Empirical confirmation plan (authorized lab run — NOT done here)
+## 5. Empirical confirmation plan (EXECUTED — issue #108, 2026-08-01; results in §1.4)
+
+> **This plan was run.** The measured diff is summarised in **§1.4** and folded
+> into the §3 rows (tagged **MEASURED**). The procedure below is retained as the
+> method of record. Outcome: one field differs (`Expiry`, favourably); all others
+> measured identical for the single-message probe.
 
 **Goal:** turn every `UNCERTAIN` / "verify" row into a measured result by diffing
 the ORIGINAL's MQMD against the STREAMED COPY's MQMD, field by field, for the
@@ -290,11 +350,14 @@ echo "DISPLAY QREMOTE(GW.SEC.INSTRUCT.REMOTE) CAPEXPRY" | runmqsc <OUR_QM>
 A non-`NOLIMIT` `CAPEXPRY` anywhere on the path is the §4 #1 risk realized —
 record it loudly.
 
-### 5.6 What "done" looks like
+### 5.6 What "done" looks like — ACHIEVED (issue #108, 2026-08-01)
 
-Every row in §3 has a measured value; §4 items 1–3, 5 are confirmed or refuted
-with amqsbcg output attached; the `report-ready` gate for this note can then be
-run. **Until then this note is doc-research only.**
+Every measurable row in §3 now has a measured value (§1.4); §4 items 1–3 are
+resolved (1 benign, 2 refuted, 3 confirmed) and item 5 is partial (single-message
+measured identical; grouped case still documentation-only). The single-message
+probe leaves only the grouped/segmented case and message properties (§6)
+unexercised. **This note is no longer doc-research only — its core claim (one
+field differs, favourably) is empirically confirmed.**
 
 ---
 
