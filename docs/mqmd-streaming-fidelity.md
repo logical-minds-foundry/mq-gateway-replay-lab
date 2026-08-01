@@ -153,10 +153,9 @@ resolves to on the path).
 single-message probe of §1.4 could not: **report options**, a **grouped MQMD v2
 message**, and an **MQRFH2 named property**. Because these need custom MQMD /
 report / group / property control that `amqsput` cannot express, each message was
-put with a **pymqi client** on the app-client (`10.50.0.60`), client-connecting to
-`NHAUAPP` over `APP.SVRCONN` with **mutual TLS**; the streamed copy was then read
-with `amqsbcg` on the `SVCQM` landing queue and, for reports, on the report queue.
-(See `docs/operating-the-lab-from-a-dev-session.md` for the exact access path.)
+put with a **pymqi client** on the app-client, client-connecting to `NHAUAPP` over
+`APP.SVRCONN` with **mutual TLS**; the streamed copy was then read with `amqsbcg`
+on the `SVCQM` landing queue and, for reports, on the report queue.
 
 **R6 — report options (`MQRO_COA | MQRO_COD`): the capstone.** One instruction was
 put through the `GW.SEC.INSTRUCT` QALIAS with `Report = MQRO_COA | MQRO_COD`,
