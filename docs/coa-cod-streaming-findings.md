@@ -1,7 +1,12 @@
 # COA/COD × streaming-queue gating spike — findings
 
-**Epic:** #105 (COA/COD transport-milestone telemetry) · **Task 3** (gating spike, spec §4)
-**Status:** Track 1 (documentation research) complete. Track 2 (live experiment) **PENDING** an authorized run against the shared live lab.
+**Epic:** #105 (COA/COD transport-milestone telemetry, now repurposed into a
+risk-documentation epic) · **Task 3** (gating spike, spec §4)
+**Status:** **COMPLETE — definitive NO-GO.** Track 1 (documentation research) is
+conclusive on its own: **two independent showstoppers** each block the design. Track 2
+(a live experiment) would confirm the streaming-strip showstopper empirically but is
+**not required** for the conclusion. A well-characterised negative result is the
+accepted terminal outcome for this spike (spec §4, §13.2).
 
 ## Purpose & topology
 
@@ -33,7 +38,7 @@ docs state) from **[JUDGMENT]** (our reasoning on top). Where the docs do not ad
 the interaction, that is called out explicitly as **[DOCS SILENT]** rather than
 inferred as if documented.
 
-### Headline finding — report options are stripped from the streamed copy
+### Showstopper 1 (the "headline finding") — report options are stripped from the streamed copy
 
 **[DATA]** The IBM MQ *Streaming queues configuration* page states that the streamed
 copy is a near-duplicate of the original "including all of the message descriptor
@@ -52,6 +57,39 @@ So SVCQM never receives a report *request* on the copy it lands — which means 
 milestones the epic actually wants (`ARRIVED` from an SVCQM COA, `DELIVERED` from an
 SVCQM COD) are **not** produced by this topology as designed. Track 2 must confirm
 this empirically, but the documentation points clearly at it.
+
+### Showstopper 2 (independent) — the single `ReplyToQ` is already committed to SWIFT response routing
+
+This showstopper was identified after the streaming-strip finding above. It is
+**independent** of showstopper 1: it would block the design even if streaming did not
+strip the report options.
+
+**[DATA]** An MQMD carries exactly **one** `ReplyToQ` / `ReplyToQMgr` pair, and every
+report message a queue manager generates — COA, COD, exception, expiration — is routed
+to that one pair. There is no per-report-type reply destination: the queue manager has
+nowhere but `ReplyToQ`/`ReplyToQMgr` to send a COA or COD.
+Source: https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=descriptor-field-details-mqmd
+· *Types of message* (report routing): https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=messages-types-message
+
+**[DATA — context, not IBM docs]** In this gateway the SWIFT counterparty
+application requirement **mandates** that outbound instructions specify
+`ReplyToQ`/`ReplyToQMgr`, and the counterparty uses that pair to route its
+(long-lived) **business responses** — MT548 status messages and the like — back to us.
+`ReplyToQ` is therefore already committed to the SWIFT **response** queue
+`GW.SEC.REPLY`. This is an application/counterparty convention in this context, **not**
+an MQ law — but it holds firmly here and is not ours to change (parasite/boundary rule).
+
+**[JUDGMENT]** Because there is only one `ReplyToQ` and it is already bound to
+business-response routing, a **dedicated report queue (`GW.SEC.REPORT`) is
+infeasible**. Any COA/COD that fired would be routed to `ReplyToQ` = `GW.SEC.REPLY` —
+the application's business-response queue — so the app would be exposed to report
+messages and would have to recognise and handle them alongside genuine MT548 responses.
+Even the single *useless* local COA that showstopper 1 leaves intact (our QM,
+~`SENT` time, a local artifact of no milestone value) would land on `GW.SEC.REPLY`,
+polluting the business queue for zero value. There is no non-intrusive way to isolate
+transport reports from the app's response stream under a single `ReplyToQ`. This does
+not change the verdict — showstopper 1 already blocks the outbound SVCQM reports — but
+it independently rules out the "just add a dedicated report queue" mitigation.
 
 ### 1. Is a COA generated for arrival on the LOCAL audit queue (the retained original on our QM)?
 
@@ -146,12 +184,24 @@ report options from the streamed copy means we expect to observe **only the loca
 other words, the streaming topology likely prevents COA/COD from composing into the
 `ARRIVED`/`DELIVERED` milestones the way the hypothesis assumed. This is exactly the
 kind of well-characterised negative result the spike is allowed to terminate on — see
-the go/no-go note. Track 2 is required to turn this documented prediction into an
-observed fact.
+the definitive NO-GO conclusion below. Combined with the independent `ReplyToQ`
+collision (showstopper 2), the spike terminates NO-GO without a live run; Track 2 would
+only turn this documented prediction into an observed fact, and is not required.
 
 ---
 
-## Track 2 — live experiment procedure (PENDING — for the human / authorized run)
+## Track 2 — live experiment procedure (OPTIONAL — not required for the conclusion)
+
+**Not required.** The no-go conclusion stands on Track 1 alone. This procedure is
+retained only so that, if a human ever wants the streaming-strip (showstopper 1)
+confirmed empirically, the steps exist. It confirms **only** showstopper 1; showstopper
+2 (the shared `ReplyToQ`) is a structural fact that no live run can change.
+
+**Caveat from showstopper 2.** In production `ReplyToQ` is bound to `GW.SEC.REPLY`, so
+the `GW.SEC.REPORT` queue in step 1 could never actually receive production reports. Any
+Track 2 run must therefore point `ReplyToQ` at a **throwaway** report queue purely to
+observe streaming-strip behaviour in isolation — it does not represent a shippable
+routing.
 
 **Do not run this without authorization: it touches the shared live lab (SVCQM and the
 inter-QM link are declare-and-verify, never mutated).** Track 1 does not run it.
@@ -208,21 +258,42 @@ request.
 
 ---
 
-## Go / no-go note
+## Conclusion — definitive NO-GO
 
-A **well-characterised negative result is an acceptable terminal outcome** for this
-spike and the epic (spec §4, §13.2). Track 1's documented prediction is a *no-go for
-the report-request-on-the-streamed-put mechanism as specified*: because IBM MQ strips
-COA/COD options from the streamed copy, the SVCQM `ARRIVED`/`DELIVERED` milestones are
-not obtainable from that copy. If Track 2 confirms this, the correct outcome is to
-record the finding, cut the downstream ingest/metrics tasks that depend on SVCQM
-reports, and conclude at the retrospective — **not** to invent a workaround silently. A
-possible design pivot worth noting for that discussion (out of scope for this spike):
-if `ARRIVED`/`DELIVERED` are still wanted, the report request would have to ride a
-message path that is **not** the streamed copy (e.g., requesting reports on a
-non-streamed transmit put), which is a different architecture than §3's
-single-put-through-the-QALIAS and would need its own spec change. Track 2 confirms
-whether that pivot is even necessary.
+**Verdict: NO-GO.** COA/COD transport telemetry **cannot** be added
+**non-intrusively and guarantee-preservingly** over the streaming-audit design. The
+spike is complete; a well-characterised negative result is the accepted terminal
+outcome (spec §4, §13.2), and this one rests on **two independent reasons**, either of
+which is sufficient on its own:
+
+- **(a) Streaming strips the report options** (showstopper 1). IBM MQ clears the
+  COA/COD option bits from the streamed copy that reaches SVCQM, so **no SVCQM
+  `ARRIVED`/`DELIVERED` report is ever generated**. The two milestones the epic wanted
+  are simply not produced by this topology.
+- **(b) The single `ReplyToQ` is shared with SWIFT response routing** (showstopper 2).
+  Because there is only one `ReplyToQ`/`ReplyToQMgr` and it is already committed to the
+  business-response queue `GW.SEC.REPLY`, reports **cannot be isolated to a dedicated
+  queue** and would land in — and pollute — the application's reply stream.
+
+**The only "fix" is rejected.** The lone way to obtain the milestones would be an
+**application dual-put** onto the transmit path (reports requested on a non-streamed
+put that the app writes itself). That is rejected because it:
+
+1. **moves audit completeness out of the queue manager's `MUSTDUP` guarantee into
+   best-effort application code** — the exact opposite of this repo's MQ-native,
+   one-UOW design (a crash between puts becomes silent loss, the failure mode the whole
+   lab exists to eliminate);
+2. **requires the application to hand-assign a shared `MsgId`** across the two puts,
+   re-introducing application logic the streaming design deliberately removed; and
+3. **still lands the reports in the app's reply queue** `GW.SEC.REPLY` — showstopper 2
+   is not escaped by the dual-put, so even this rejected workaround fails the
+   non-intrusiveness bar.
+
+**Terminal actions.** Record this finding, do **not** invent a workaround silently, cut
+the downstream ingest/metrics tasks that depended on SVCQM reports, and carry the result
+into the epic's risk-documentation retrospective. **Track 2 is not required** for this
+conclusion; it would only turn the streaming-strip prediction (a) into an observed fact
+and can change nothing about (b).
 
 ---
 
