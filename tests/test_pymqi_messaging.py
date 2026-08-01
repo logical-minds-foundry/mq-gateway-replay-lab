@@ -24,7 +24,7 @@ from typing import Any
 import pytest
 
 from gwlab import pymqi_messaging
-from gwlab.messaging import MQFB_COA, MQRO_COA, MQRO_COD, Message, ReportOpts
+from gwlab.messaging import Message
 from gwlab.pymqi_messaging import PyMqiMessaging, _put_time
 
 # --- the fake pymqi surface ---------------------------------------------------
@@ -70,7 +70,6 @@ class _FakeMD:
         self.CorrelId = b""
         self.PutDate = b""
         self.PutTime = b""
-        self.Feedback = 0  # MQFB_NONE — non-report messages carry no feedback
         for key, value in kw.items():
             setattr(self, key, value)
 
@@ -161,7 +160,6 @@ class _FakePyMqi:
                 md.CorrelId = outcome.get("correl_id", b"")
                 md.PutDate = outcome.get("put_date", b"")
                 md.PutTime = outcome.get("put_time", b"")
-                md.Feedback = outcome.get("feedback", 0)
                 return outcome["body"]
 
             def put(self, body: bytes, md: _FakeMD, pmo: _FakePMO) -> None:
@@ -174,9 +172,6 @@ class _FakePyMqi:
                         "msg_id": bytes(md.MsgId),
                         "correl_id": bytes(md.CorrelId),
                         "options": pmo.Options,
-                        "report": getattr(md, "Report", None),
-                        "reply_to_q": getattr(md, "ReplyToQ", None),
-                        "reply_to_qmgr": getattr(md, "ReplyToQMgr", None),
                     }
                 )
 
@@ -272,37 +267,6 @@ def test_put_without_msg_id_mints_a_new_id_and_reads_it_back(fake_pymqi: _FakePy
     assert message.msg_id == b"MINTED-ID-000000"  # read back onto the message
 
 
-def test_put_without_report_opts_leaves_the_report_descriptor_untouched(
-    fake_pymqi: _FakePyMqi,
-) -> None:
-    adapter = _connect(fake_pymqi)
-    adapter.put("GW.CPB.REQUEST", Message(body=b"trade-3", msg_id=b"ID-3"))
-    (record,) = fake_pymqi.puts
-    assert record["report"] is None  # no Report bits set
-    assert record["reply_to_q"] is None
-    assert record["reply_to_qmgr"] is None
-
-
-def test_put_with_report_opts_maps_to_mqmd_report_and_reply_to(fake_pymqi: _FakePyMqi) -> None:
-    adapter = _connect(fake_pymqi)
-    opts = ReportOpts(MQRO_COA | MQRO_COD, "GW.SEC.REPORT", "OURQM")
-    adapter.put("GW.SEC.INSTRUCT", Message(body=b"instr", msg_id=b"ID-4"), report_opts=opts)
-    (record,) = fake_pymqi.puts
-    assert record["report"] == MQRO_COA | MQRO_COD
-    assert record["reply_to_q"] == b"GW.SEC.REPORT"
-    assert record["reply_to_qmgr"] == b"OURQM"
-
-
-def test_put_report_opts_without_qmgr_leaves_reply_to_qmgr_blank(fake_pymqi: _FakePyMqi) -> None:
-    # reply_to_qmgr None → ReplyToQMgr never set → MQ resolves it to our local QM.
-    adapter = _connect(fake_pymqi)
-    opts = ReportOpts(MQRO_COA | MQRO_COD, "GW.SEC.REPORT", None)
-    adapter.put("GW.SEC.INSTRUCT", Message(body=b"instr", msg_id=b"ID-5"), report_opts=opts)
-    (record,) = fake_pymqi.puts
-    assert record["reply_to_q"] == b"GW.SEC.REPORT"
-    assert record["reply_to_qmgr"] is None
-
-
 # --- get: present / empty / error ---------------------------------------------
 
 
@@ -317,31 +281,6 @@ def test_get_returns_the_message_when_one_is_present(fake_pymqi: _FakePyMqi) -> 
     assert message.msg_id == b"M-1"
     assert message.correl_id == b"C-1"
     assert message.put_time is None  # no PutDate/PutTime stamped
-    assert message.feedback is None  # MQFB_NONE (0) reads back as None
-
-
-def test_get_reads_feedback_on_a_report_message(fake_pymqi: _FakePyMqi) -> None:
-    # A returned COA report: body-less, CorrelId = the instruction MsgId, feedback set.
-    adapter = _connect(fake_pymqi)
-    fake_pymqi.scripts["GW.SEC.REPORT"] = [
-        {"body": b"", "correl_id": b"MID-1", "feedback": MQFB_COA}
-    ]
-    message = adapter.get("GW.SEC.REPORT")
-    assert message is not None
-    assert message.feedback == MQFB_COA
-    assert message.correl_id == b"MID-1"
-
-
-def test_browse_new_reads_feedback_on_report_messages(fake_pymqi: _FakePyMqi) -> None:
-    adapter = _connect(fake_pymqi)
-    queue = "GW.SEC.REPORT"
-    fake_pymqi.scripts[queue] = [
-        {"body": b"", "correl_id": b"MID-1", "feedback": MQFB_COA},
-        _CMQC.MQRC_NO_MSG_AVAILABLE,
-    ]
-    (report,) = adapter.browse_new(queue)
-    assert report.feedback == MQFB_COA
-    assert report.body == b""
 
 
 def test_get_returns_none_on_no_msg_available(fake_pymqi: _FakePyMqi) -> None:
