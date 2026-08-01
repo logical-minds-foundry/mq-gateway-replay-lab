@@ -41,25 +41,18 @@ warn_unused_configs = true
 testpaths = ["tests"]
 
 [tool.coverage.run]
-# The pymqi adapter needs the MQ client libraries, so it cannot run in the
-# validation container. It is verified end-to-end on the live queue manager
-# (the two-process last-hour run — demo/gateway_driver.py + demo/svc_responder.py
-# — plus the remote proof harnesses under demo/proofs/), not by unit tests. The exporter
-# HTTP server binds a socket and connects via pymqi, so it is likewise box-only;
-# the exposition it serves (exporter.render) is unit-tested. The v1 deploy_http
-# client talks to Prometheus/Grafana over HTTP.
-#
-# The epic-#65 box-only modules (swift/{serve_http,serve_responder,gateway_run,
-# deploy_http}.py and swift/stream/serve_collector.py) are NO LONGER exempt: issue
-# #129 retired them from this list by testing their loop/handler logic against the
-# mocked pymqi/socket/clock boundary (a fake Messaging, a patched HTTPServer /
-# threading.Thread / time.sleep, and a mocked urlopen), reaching 100% coverage
-# without a live box.
-omit = [
-    "src/gwlab/pymqi_messaging.py",
-    "src/gwlab/exporter_server.py",
-    "src/gwlab/deploy_http.py",
-]
+# This repo has ZERO whole-module coverage exemptions: every module in src/ is
+# covered to 100% branch + line. The box-only modules that once lived here — the
+# pymqi adapter (pymqi_messaging.py), the v1 exporter HTTP server
+# (exporter_server.py), and the v1 Grafana/Prometheus deploy client
+# (deploy_http.py) — were retired from this omit list in issue #157 by testing
+# their logic against the mocked boundary: an injected fake `pymqi` module
+# (no MQ client libs needed), a stubbed request handler + patched HTTPServer so
+# nothing binds, and a mocked urllib.request.urlopen. The epic-#65 box-only
+# modules were retired the same way in #129. The live end-to-end proofs on the
+# box (demo/gateway_driver.py + demo/svc_responder.py, the remote harnesses under
+# demo/proofs/) are retained on top of the unit coverage, not replaced by it.
+omit = []
 
 [tool.coverage.report]
 exclude_lines = [
