@@ -236,7 +236,7 @@ deliberately taken.
 - **The streaming collector as a standalone artifact.** It is generic to
   "SWIFT-lifecycle-over-MQ-streaming-audit" and currently lives inside this lab's
   `gwlab` package with an `/opt/gwlab` install-mimic. Extracting it into its own
-  installable distribution (the AMQ-7T amqsevt install pattern taken to its
+  installable distribution (the `amqsevt` install pattern taken to its
   logical end) is an opportunity. *Logged, not yet acted on.*
 
 - **ISO 20022 re-pointing.** The tokenizer/catalog/model are built to the public
