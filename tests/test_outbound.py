@@ -4,7 +4,7 @@ import pytest
 
 from gwlab.config import QueueSet
 from gwlab.fake_messaging import FakeMessaging
-from gwlab.messaging import Message
+from gwlab.messaging import Message, ReportOpts
 from gwlab.outbound import send, send_via_two_put
 
 QS = QueueSet.for_counterparty("CPB")
@@ -48,11 +48,13 @@ def test_two_put_fallback_is_atomic() -> None:
             super().__init__()
             self._puts = 0
 
-        def put(self, queue: str, message: Message) -> None:
+        def put(
+            self, queue: str, message: Message, *, report_opts: ReportOpts | None = None
+        ) -> None:
             self._puts += 1
             if self._puts == 2:
                 raise RuntimeError("boom on the audit put")
-            super().put(queue, message)
+            super().put(queue, message, report_opts=report_opts)
 
     fm = FailingSecondPut()
     with pytest.raises(RuntimeError, match="boom"):

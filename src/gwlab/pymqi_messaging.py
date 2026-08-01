@@ -21,6 +21,8 @@ from gwlab.messaging import Message
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from gwlab.messaging import ReportOpts
+
 
 @dataclass
 class _BrowseCursor:
@@ -105,7 +107,7 @@ class PyMqiMessaging:
             self._queues[key] = handle
         return handle
 
-    def put(self, queue: str, message: Message) -> None:
+    def put(self, queue: str, message: Message, *, report_opts: ReportOpts | None = None) -> None:
         handle = self._open(queue, self._c.MQOO_OUTPUT)
         md = self._pymqi.MD()
         options = self._c.MQPMO_SYNCPOINT
@@ -116,6 +118,14 @@ class PyMqiMessaging:
             # uniqueness ourselves; read it back so the caller can track the message.
             options |= self._c.MQPMO_NEW_MSG_ID
         md.CorrelId = message.correl_id
+        if report_opts is not None:
+            # Request COA/COD: the report bits and the return address the SVCQM
+            # routes the reports to (spec §3). Default id correlation applies, so
+            # each report's CorrelId is this instruction's MsgId.
+            md.Report = report_opts.report
+            md.ReplyToQ = report_opts.reply_to_q.encode()
+            if report_opts.reply_to_qmgr is not None:
+                md.ReplyToQMgr = report_opts.reply_to_qmgr.encode()
         pmo = self._pymqi.PMO(Options=options)
         handle.put(message.body, md, pmo)
         if not message.msg_id:
@@ -140,6 +150,7 @@ class PyMqiMessaging:
             msg_id=bytes(md.MsgId),
             correl_id=bytes(md.CorrelId),
             put_time=_put_time(md),
+            feedback=md.Feedback or None,
         )
 
     def _browse_iter(self, queue: str) -> Iterator[Message]:
@@ -159,6 +170,7 @@ class PyMqiMessaging:
                 msg_id=bytes(md.MsgId),
                 correl_id=bytes(md.CorrelId),
                 put_time=_put_time(md),
+                feedback=md.Feedback or None,
             )
             options = self._c.MQGMO_BROWSE_NEXT | self._c.MQGMO_NO_WAIT
 
@@ -217,6 +229,7 @@ class PyMqiMessaging:
                     msg_id=bytes(md.MsgId),
                     correl_id=bytes(md.CorrelId),
                     put_time=_put_time(md),
+                    feedback=md.Feedback or None,
                 )
             )
 
