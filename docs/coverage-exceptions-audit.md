@@ -6,6 +6,22 @@ disposition — so the scope of what we exempt is always explicit and small.
 
 ## 1. Coverage `omit` — whole-module exemptions
 
+**There are none.** `[tool.coverage.run] omit` is empty: every module in `src/`
+is covered to **100% branch + line**. The sections below record how the modules
+that were once exempted were brought under coverage by *mocking the boundary* —
+no source logic changes, no `pragma`, no faked coverage.
+
+### Retired in #157 (the three pre-epic v1 box-only modules)
+
+The last three whole-module exemptions — the pre-epic-#49 v1 modules — were
+retired with the same boundary-mocking technique #129 established:
+
+| Module | How it is now covered |
+|---|---|
+| `pymqi_messaging.py` | A **fake `pymqi` module** is injected into `sys.modules` before the adapter's lazy `import pymqi`, reproducing the MQI surface it reads (`CD`/`SCO`/`QueueManager`/`Queue`/`MD`/`GMO`/`PMO`, `MQMIError.reason`, a `CMQC` constant namespace). Each test scripts what `Queue.get` returns/raises, covering `__init__` (plaintext / TLS with & without `cert_label`), `_open` (cache miss + hit), `put` (explicit MsgId vs `MQPMO_NEW_MSG_ID` read-back), `get` (present / 2033→`None` / other→raise), `browse` + `browse_new` (BROWSE_FIRST→NEXT cursor, `limit` cap, 2033 stop, `MQRC_CONNECTION_BROKEN` reopen-at-first, other→raise), `commit`/`backout`/`clear`/`disconnect`, and `_put_time` (valid + unstamped). No MQ client libraries needed. |
+| `exporter_server.py` | `do_GET` (`/metrics`, `/`, 404) driven against an in-memory `wfile` + stubbed `send_*`; `serve()` with `PyMqiMessaging` and `HTTPServer` patched so nothing connects or binds; `main()` argparse. |
+| `deploy_http.py` | `urllib.request.urlopen` mocked by a URL-routing fake (Prometheus QM discovery, stack lookup, Grafana cockpit-folder resolution: found / no-stack / 404 / root, and the dashboard POST); `main()` against a faked `HttpDeployClient` covering both the deployed and the skipped-QM print branches. |
+
 ### Retired in #129 (the five epic-#65 box-only modules)
 
 These were exempted while the streaming/live pieces were built ("verified on the
@@ -25,17 +41,14 @@ bound socket / `HTTPServer`, `threading`, `time.sleep`/`time.time`, and `urllib`
 The live end-to-end proofs on the box are *retained*; the unit coverage is added on
 top, not in place of them.
 
-### Remaining (pre-existing, v1 / epic #49-era) — not yet retired
+### Remaining
 
-| Module | Why it's still omitted | Path to retire |
-|---|---|---|
-| `pymqi_messaging.py` | The **actual pymqi adapter** — the one true boundary; needs the MQ client libs to *run*. | Coverable by mocking the whole pymqi surface (`CD`/`QueueManager`/`Queue`/`MD`/`GMO`/`PMO`) and asserting the adapter drives them correctly. |
-| `exporter_server.py` | v1 exporter HTTP server (socket + pymqi). | Same boundary-mocking pattern proven in #129. |
-| `deploy_http.py` | v1 Grafana deploy (HTTP). | Mock `urllib`, as the swift `deploy_http` now does. |
-
-**Recommendation:** retire all three in a follow-up pass with the #129 pattern.
-`pymqi_messaging.py` is the only module where the exemption is *arguably* principled
-(it wraps the boundary itself), but it is still mockable and should be covered.
+**None.** `#157` retired the last three (see above). The repo now has **zero**
+whole-module coverage exemptions — including `pymqi_messaging.py`, the one true
+boundary, which is covered by injecting a fake `pymqi` rather than needing the MQ
+client libraries. The live end-to-end proofs on the box (the two-process
+last-hour run, the remote harnesses under `demo/proofs/`) are **retained on top
+of** the unit coverage, not replaced by it.
 
 ## 2. `exclude_lines` — conventional non-logic excludes (kept)
 
@@ -67,13 +80,15 @@ test or coverage rigor:
 
 ## 5. Summary
 
-| Exemption class | Before #129 | After #129 |
-|---|---:|---:|
-| Omitted modules | 8 | **3** (all pre-epic v1) |
-| — of which epic-#65 | 5 | **0** |
-| `# pragma: no cover` | 0 | 0 |
-| `exclude_lines` (conventional) | 4 | 4 |
+| Exemption class | Before #129 | After #129 | After #157 |
+|---|---:|---:|---:|
+| Omitted modules | 8 | 3 (all pre-epic v1) | **0** |
+| — of which epic-#65 | 5 | 0 | 0 |
+| `# pragma: no cover` | 0 | 0 | 0 |
+| `exclude_lines` (conventional) | 4 | 4 | 4 |
 
-**Net:** every line of this epic's code is now covered. The only remaining coverage
-exemptions are the three pre-#65 v1 modules — a clean, bounded follow-up. The lint/type
-suppressions are narrow code-quality accommodations, not gaps in what the tests touch.
+**Net:** the repo now has **zero** whole-module coverage exemptions — every line
+of every `src/` module is covered to 100% branch + line, the pymqi adapter
+included (via an injected fake `pymqi`). The only entries left in this document
+are the conventional `exclude_lines` (non-executable guards) and the narrow
+lint/type suppressions — neither reduces test or coverage rigor.
