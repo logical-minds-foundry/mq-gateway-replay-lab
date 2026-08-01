@@ -231,7 +231,7 @@ def test_inquire_depth_returns_current_and_max():
 - Test: `tests/swift/test_state_segments.py`
 
 **Interfaces:**
-- Produces: `SettlementState.segment_counts() -> dict[tuple[str, str, str], int]` keyed by `(state, reason_family, msg_type)` → count, computed from the maintained entries. `_Entry` gains `reason_family: ReasonFamily = ReasonFamily.OTHER`, updated in `_apply` via `reasons.classify` (keep the last non-`None` family). `msg_type` is `entry.instruction.mt`; `state` is `entry.state.current`.
+- Produces: `SettlementState.segment_counts() -> dict[tuple[str, str, str], int]` keyed by `(state, reason_family, msg_type)` → count, computed from the maintained entries. `_Entry` gains `reason_family: ReasonFamily = ReasonFamily.OTHER`, updated in `_apply` via `reasons.classify` (keep the last non-`None` family). `msg_type` is `entry.instruction.mt`; `state` is `entry.state.current`. Also `SettlementState.oldest_age_seconds(now: datetime) -> float` — the age of the oldest retained instruction (the expiry-window-stability signal, spec Unit 8), `0.0` when empty.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -252,6 +252,11 @@ def test_segment_counts_key_on_state_family_msgtype():
     s.ingest(_resp("A", StatusItem("IPRC", "REJT", "NARR")))
     counts = s.segment_counts()
     assert counts[("rejected", "rejection", "541")] == 1
+
+def test_oldest_age_seconds_from_window():
+    s = SettlementState()
+    s.ingest(_instr("A", "541"))  # put_time = 2026-01-01 00:00:00
+    assert s.oldest_age_seconds(datetime(2026, 1, 1, 0, 5)) == 300.0
 ```
 
 - [ ] **Step 2: Run to verify it fails** — FAIL (`segment_counts` missing).
@@ -265,10 +270,17 @@ def segment_counts(self) -> dict[tuple[str, str, str], int]:
         key = (str(entry.state.current), str(entry.reason_family), entry.instruction.mt)
         counts[key] = counts.get(key, 0) + 1
     return counts
+
+def oldest_age_seconds(self, now: datetime) -> float:
+    """Age of the oldest retained instruction — the expiry-window-stability signal."""
+    if not self._by_seme:
+        return 0.0
+    oldest = min(entry.instruction.put_time for entry in self._by_seme.values())
+    return (now - oldest).total_seconds()
 ```
 
 - [ ] **Step 4: Run to verify it passes** — PASS.
-- [ ] **Step 5: Commit** — `vrg-commit --type feat --scope collector --message "macro-segment accounting (state x reason_family x msg_type)"`
+- [ ] **Step 5: Commit** — `vrg-commit --type feat --scope collector --message "macro-segment accounting + oldest-age (state x reason_family x msg_type)"`
 
 ---
 
@@ -280,7 +292,7 @@ def segment_counts(self) -> dict[tuple[str, str, str], int]:
 
 **Interfaces:**
 - Consumes: `SettlementState.segment_counts()` (Task 5), `Messaging.inquire_depth` (Task 4).
-- Produces: `render_segment_metrics(counts: dict[tuple[str,str,str], int]) -> list[str]` emitting `swift_settlement_segment_total{state,reason_family,msg_type}`; `render_audit_queue_metrics(depths: dict[str, tuple[int,int]]) -> list[str]` emitting `swift_audit_queue_depth{queue}`, `swift_audit_queue_max_depth{queue}`, `swift_audit_queue_fill_ratio{queue}`.
+- Produces: `render_segment_metrics(counts: dict[tuple[str,str,str], int]) -> list[str]` emitting `swift_settlement_segment_total{state,reason_family,msg_type}`; `render_audit_queue_metrics(depths: dict[str, tuple[int,int]]) -> list[str]` emitting `swift_audit_queue_depth{queue}`, `swift_audit_queue_max_depth{queue}`, `swift_audit_queue_fill_ratio{queue}`; and `render_oldest_age_metric(age_seconds: float) -> list[str]` emitting the single gauge `swift_audit_oldest_age_seconds` (from `SettlementState.oldest_age_seconds`). Disk/log **consumption** is *not* recreated here — it comes from the MQ Prometheus exporter (Task 7), per the spec's minimal-footprint boundary.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -314,7 +326,7 @@ def test_audit_queue_fill_ratio():
 
 **Interfaces:**
 - Consumes: the metrics from Task 6.
-- Produces: `build_settlement_board` gains Register A (efficiency-% headline `sum(...settled...)/sum(...all...)`, fails by `reason_family`, fails by `msg_type` — each on its own panel) and Register C (audit-queue depth/fill-ratio/oldest-age + node-exporter disk). Retires the settled-dominated bar chart.
+- Produces: `build_settlement_board` gains Register A (efficiency-% headline `sum(...settled...)/sum(...all...)`, fails by `reason_family`, fails by `msg_type` — each on its own panel) and Register C (audit-queue depth/fill-ratio, `swift_audit_oldest_age_seconds`, an **expiry-window-stability** timeseries on `swift_audit_queue_depth` over time, and **disk/log filesystem-in-use from the MQ exporter** — footprint, not node-disk-IO contention). Retires the settled-dominated bar chart.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -336,7 +348,7 @@ def test_board_retires_settled_dominated_bar():
 ```
 
 - [ ] **Step 2: Run to verify it fails** — FAIL.
-- [ ] **Step 3: Implement** the Register-A/C panels (reuse `_stat`/`_target`/`_grid` helpers) and remove the `_STATE_DIST` bar panel. Add the exporter queue-monitor config so the `gw_sec_exporter` watches `GW.SEC.*` (declare-and-verify; the endorsed boundary crossing).
+- [ ] **Step 3: Implement** the Register-A/C panels (reuse `_stat`/`_target`/`_grid` helpers) and remove the `_STATE_DIST` bar panel. Register C includes the **expiry-window-stability** timeseries (`swift_audit_queue_depth` over time — steady = healthy rolling window, rising = backup/leak) and a **disk/log consumption** panel sourced from the **MQ exporter's filesystem-in-use** series (not node-disk-IO). Add the exporter queue-monitor config so the `gw_sec_exporter` watches `GW.SEC.*` (declare-and-verify; the endorsed boundary crossing).
 - [ ] **Step 4: Run to verify it passes** — PASS.
 - [ ] **Step 5: Commit** — `vrg-commit --type feat --scope board --message "Register A (efficiency+reason/msg breakdown) + Register C (audit-queue infra health)"`
 
