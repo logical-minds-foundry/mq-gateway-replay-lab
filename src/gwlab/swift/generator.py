@@ -62,6 +62,20 @@ class Mix:
 #: The default scenario mix (~90% clean, ~4% reject, ~4% fail, ~2% slow).
 DEFAULT_MIX = Mix()
 
+#: The mechanism (teaching) mix — today's inflated ``DEFAULT_MIX``, preserved so
+#: the ``generate``/mechanism mode keeps demonstrating every outcome loudly.
+MECHANISM_MIX = DEFAULT_MIX
+
+#: Calibrated asset-class books (Task 1 reference). Weights are clean/reject/fail/slow.
+REALISTIC_BOOKS: dict[str, Mix] = {
+    "govvie": Mix(clean=0.965, reject=0.003, fail=0.020, slow=0.012, fail_reasons=("LACK", "MONY")),
+    "equity": Mix(clean=0.955, reject=0.005, fail=0.028, slow=0.012, fail_reasons=("LACK", "MONY")),
+    "etf": Mix(clean=0.800, reject=0.005, fail=0.180, slow=0.015, fail_reasons=("LACK", "MONY")),
+}
+
+#: Book share of the aggregate stream (invented, plausible back-office mix).
+_BOOK_SHARE: dict[str, float] = {"govvie": 0.45, "equity": 0.45, "etf": 0.10}
+
 #: Category names, aligned with the weight vector built in :func:`generate`.
 _CATEGORIES = ("clean", "reject", "fail", "slow")
 
@@ -142,3 +156,31 @@ def generate(
         text = _build_text(mt, seme, directive, target_size_bytes)
         instructions.append(GeneratedInstruction(seme, mt, directive, text))
     return instructions
+
+
+def generate_realistic(
+    count: int,
+    *,
+    seed: int = 0,
+    target_size_bytes: int = 1024,
+) -> list[GeneratedInstruction]:
+    """Blend the calibrated asset-class books into one realistic aggregate day.
+
+    Deterministic given ``seed``. Asset class shapes the aggregate outcome mix only;
+    it is not carried on the generated instruction (macro-only invariant).
+    """
+    rng = random.Random(seed)  # noqa: S311
+    books = list(_BOOK_SHARE)
+    weights = [_BOOK_SHARE[b] for b in books]
+    out: list[GeneratedInstruction] = []
+    for index in range(count):
+        book = rng.choices(books, weights=weights, k=1)[0]  # noqa: S311
+        mix = REALISTIC_BOOKS[book]
+        seme = f"GWSEC{index:010d}"
+        mt = _pick(rng, mix.mts)
+        category_weights = [mix.clean, mix.reject, mix.fail, mix.slow]
+        category = rng.choices(_CATEGORIES, weights=category_weights, k=1)[0]  # noqa: S311
+        directive = _draw_directive(rng, category, mix)
+        text = _build_text(mt, seme, directive, target_size_bytes)
+        out.append(GeneratedInstruction(seme, mt, directive, text))
+    return out
