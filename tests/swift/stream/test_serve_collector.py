@@ -178,6 +178,51 @@ def test_run_sweeps_until_caught_up_then_sleeps(monkeypatch: pytest.MonkeyPatch)
     assert thread["started"] is True
 
 
+def test_run_publishes_segmented_audit_and_oldest_age_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A queried audit queue reads a non-zero (current, max) so the fill-ratio path runs;
+    # the wiring inquires each GW.SEC.* audit queue and appends the rendered lines.
+    mq = FakeMessaging()
+    mq.set_depth("GW.SEC.INSTRUCT.AUDIT", current=1200, maximum=5000)
+    monkeypatch.setattr(serve_collector, "connect", lambda _args: mq)
+    monkeypatch.setattr(
+        serve_collector.threading,
+        "Thread",
+        lambda *, target, args, daemon: type("_T", (), {"start": lambda self: None})(),
+    )
+
+    published: list[str] = []
+
+    class _RecordingHolder(SnapshotHolder):
+        def publish(self, text: str) -> None:
+            published.append(text)
+            super().publish(text)
+
+    monkeypatch.setattr(serve_collector, "SnapshotHolder", _RecordingHolder)
+    monkeypatch.setattr(
+        serve_collector, "sweep", lambda *_a, **_k: SweepResult(ingested=0, more=False)
+    )
+
+    def _boom(_seconds: float) -> None:
+        raise _StopError
+
+    monkeypatch.setattr(serve_collector.time, "sleep", _boom)
+
+    args = argparse.Namespace(
+        port=9111, horizon=3, batch_size=20000, poll_seconds=5.0, **vars(_CONN)
+    )
+    with pytest.raises(_StopError):
+        serve_collector.run(args)
+
+    body = published[-1]
+    assert "# TYPE swift_settlement_segment_total gauge" in body
+    assert 'swift_audit_queue_depth{queue="GW.SEC.INSTRUCT.AUDIT"} 1200' in body
+    assert 'swift_audit_queue_fill_ratio{queue="GW.SEC.INSTRUCT.AUDIT"} 0.24' in body
+    assert 'swift_audit_queue_depth{queue="GW.SEC.STATUS.AUDIT"} 0' in body
+    assert "swift_audit_oldest_age_seconds " in body
+
+
 # --- main() -------------------------------------------------------------------
 
 
