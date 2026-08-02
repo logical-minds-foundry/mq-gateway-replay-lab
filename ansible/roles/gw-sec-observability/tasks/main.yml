@@ -121,3 +121,36 @@
     PYTHONPATH: "{{ gw_src_dir }}"
   register: gw_sec_board_deploy
   changed_when: "'deployed' in gw_sec_board_deploy.stdout"
+
+# --- declare-and-verify: extend the lab's IBM MQ exporter to our audit queues --
+# The endorsed boundary crossing. Register C reads the lab-owned MQ exporter's
+# ibmmq_qmgr_* filesystem-in-use and per-queue series for the GW.SEC.* audit
+# queues. The gateway does not own that exporter, so it verifies the boundary is
+# present and then adds ONLY a gateway-marked block extending the monitored-queue
+# set — it never rewrites the lab's config.
+- name: Check the lab's IBM MQ exporter config is present (declare-and-verify)
+  ansible.builtin.stat:
+    path: "{{ gw_sec_mq_exporter_config }}"
+  register: gw_sec_mq_exporter_stat
+  become: true
+  delegate_to: "{{ gw_sec_mq_exporter_host }}"
+
+- name: Fail loudly if the MQ exporter boundary is not there
+  ansible.builtin.assert:
+    that:
+      - gw_sec_mq_exporter_stat.stat.exists
+    fail_msg: >-
+      The lab's IBM MQ exporter config ({{ gw_sec_mq_exporter_config }}) is not on
+      {{ gw_sec_mq_exporter_host }}. Register C's audit disk/log and per-queue
+      panels read that exporter — a missing boundary is a loud signal, not a
+      silent fix. Point gw_sec_mq_exporter_config / _host at the running exporter.
+
+- name: Extend the MQ exporter's monitored queues to the GW.SEC.* audit queues
+  ansible.builtin.blockinfile:
+    path: "{{ gw_sec_mq_exporter_config }}"
+    marker: "    # {mark} gwlab-swift audit-queue monitoring (added by the gateway parasite)"
+    insertafter: '^\s*queues:\s*$'
+    block: "    - {{ gw_sec_audit_queue_pattern }}\n"
+  become: true
+  delegate_to: "{{ gw_sec_mq_exporter_host }}"
+  notify: restart mq exporter

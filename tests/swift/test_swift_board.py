@@ -22,14 +22,17 @@ def test_board_identity_and_shape() -> None:
     assert board["uid"] == "gwlab-swift-settlement"
     assert "NHAUAPP" in board["title"]
     assert board["timezone"] == "utc"
-    # 1 header + 6 operational KPI stats + 2 bargauges + 2 latency timeseries,
-    # then the collector-health section: 1 header + 2 stats + 3 timeseries.
-    assert len(board["panels"]) == 17
+    # header + 6 KPI stats
+    # + Register A: header + efficiency stat + 2 fail bargauges
+    # + anomalies bargauge + 2 latency timeseries
+    # + Register C: header + 2 audit bargauges + oldest-age stat + 2 timeseries
+    # + collector-health: header + 2 stats + 3 timeseries.
+    assert len(board["panels"]) == 26
     panel_types = [p["type"] for p in board["panels"]]
-    assert panel_types.count("stat") == 8
-    assert panel_types.count("bargauge") == 2
-    assert panel_types.count("timeseries") == 5
-    assert panel_types.count("text") == 2
+    assert panel_types.count("stat") == 10
+    assert panel_types.count("bargauge") == 5
+    assert panel_types.count("timeseries") == 7
+    assert panel_types.count("text") == 4
 
 
 def test_kpi_row_is_operational_and_does_not_repeat_the_distribution() -> None:
@@ -51,14 +54,16 @@ def test_kpi_row_is_operational_and_does_not_repeat_the_distribution() -> None:
     assert 'swift_settlement_state{state="failed"}' not in exprs
 
 
-def test_distribution_hero_is_instance_deduped() -> None:
+def test_anomalies_hero_is_instance_deduped_and_state_bar_retired() -> None:
     board = build_settlement_board("NHAUAPP")
     exprs = _exprs(board)
-    # ``max by`` collapses a failover instance-swap to one value per state/kind.
-    assert "max by (state) (swift_settlement_state)" in exprs
+    # ``max by`` collapses a failover instance-swap to one value per kind.
     assert "max by (kind) (swift_settlement_anomalies)" in exprs
-    assert "Settlement state distribution" in _titles(board)
     assert "Anomalies by kind" in _titles(board)
+    # The settled-dominated state-distribution bar is retired (buried-signal fix):
+    # no single panel plots all lifecycle states together anymore.
+    assert "max by (state) (swift_settlement_state)" not in exprs
+    assert "Settlement state distribution" not in _titles(board)
 
 
 def test_latency_panels_are_full_width_and_scaled_by_compression() -> None:
