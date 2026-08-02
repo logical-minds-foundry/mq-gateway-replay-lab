@@ -44,9 +44,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gwlab.swift import lifecycle, window
+from gwlab.swift import lifecycle, reasons, window
 from gwlab.swift.collect import Anomaly, DayReport
 from gwlab.swift.correlate import REASON_ORPHAN
+from gwlab.swift.reasons import ReasonFamily
 from gwlab.swift.reference import TERMINAL_NEGATIVE, State
 
 if TYPE_CHECKING:
@@ -71,11 +72,15 @@ class _Entry:
     live fold, maintained in place by :func:`gwlab.swift.lifecycle.apply_response`;
     ``response_count`` tracks how many responses have been folded in (for the
     ``scanned`` population gauge) without retaining the messages themselves.
+    ``reason_family`` is the macro exception family the last classifying response
+    signalled — the last non-``None`` :func:`gwlab.swift.reasons.classify`, held
+    for the :meth:`SettlementState.segment_counts` exposition seam.
     """
 
     instruction: SwiftMessage
     state: InstructionState
     response_count: int = 0
+    reason_family: ReasonFamily = ReasonFamily.OTHER
 
 
 def _transition_anomalies(state: InstructionState) -> list[Anomaly]:
@@ -134,9 +139,17 @@ class SettlementState:
         self._apply(entry, message)
 
     def _apply(self, entry: _Entry, response: SwiftMessage) -> None:
-        """Advance an entry's cached lifecycle by one response and count it."""
+        """Advance an entry's cached lifecycle by one response and count it.
+
+        The response's macro exception family is folded in too: a classifying
+        response updates the entry's ``reason_family`` (the last non-``None`` wins),
+        while a benign one leaves the running family untouched.
+        """
         lifecycle.apply_response(entry.state, response)
         entry.response_count += 1
+        family = reasons.classify(response)
+        if family is not None:
+            entry.reason_family = family
 
     def _drain_early_responses(self, seme: str, entry: _Entry) -> None:
         """Fold in any responses that were held before this instruction arrived.
@@ -213,3 +226,18 @@ class SettlementState:
             self._orphan_candidates
         )
         return DayReport(states=states, aged_out=aged_out, anomalies=anomalies, scanned=scanned)
+
+    def segment_counts(self) -> dict[tuple[str, str, str], int]:
+        """Macro-segment counts keyed (state, reason_family, msg_type) — the exposition seam."""
+        counts: dict[tuple[str, str, str], int] = {}
+        for entry in self._by_seme.values():
+            key = (str(entry.state.current), str(entry.reason_family), entry.instruction.mt)
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+    def oldest_age_seconds(self, now: datetime) -> float:
+        """Age of the oldest retained instruction — the expiry-window-stability signal."""
+        if not self._by_seme:
+            return 0.0
+        oldest = min(entry.instruction.put_time for entry in self._by_seme.values())
+        return (now - oldest).total_seconds()
