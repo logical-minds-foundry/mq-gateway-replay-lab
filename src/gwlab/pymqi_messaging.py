@@ -220,6 +220,17 @@ class PyMqiMessaging:
                 )
             )
 
+    def inquire_depth(self, queue: str) -> tuple[int, int]:
+        """Read the queue's ``CURDEPTH``/``MAXDEPTH`` via MQINQ, without draining it.
+
+        Opens the queue for ``MQOO_INQUIRE`` (handle cached like every other open)
+        and inquires both depth attributes in one call — the audit-queue
+        fill-health signal the observability tier exposes.
+        """
+        handle = self._open(queue, self._c.MQOO_INQUIRE)
+        current, maximum = handle.inquire(self._c.MQIA_CURRENT_Q_DEPTH, self._c.MQIA_MAX_Q_DEPTH)
+        return (current, maximum)
+
     def commit(self) -> None:
         self._qmgr.commit()
 

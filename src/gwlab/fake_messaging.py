@@ -33,6 +33,7 @@ class FakeMessaging:
         self._clock = clock
         self._next_msgid = 0
         self._browse_cursor: dict[str, int] = {}
+        self._depths: dict[str, tuple[int, int]] = {}
 
     def configure_stream(self, source: str, target: str) -> None:
         """Model ``STREAMQ(target) STRMQOS(MUSTDUP)`` on ``source``.
@@ -104,3 +105,16 @@ class FakeMessaging:
         removed = len(self._committed.get(queue, []))
         self._committed[queue] = []
         return removed
+
+    def set_depth(self, queue: str, *, current: int, maximum: int) -> None:
+        """Configure the ``(current, max)`` depth ``inquire_depth`` reports.
+
+        Models the queue manager's ``CURDEPTH``/``MAXDEPTH`` on an audit queue so
+        the observability tier's fill-health path can be exercised offline; the
+        in-memory committed messages are unrelated to this reported depth.
+        """
+        self._depths[queue] = (current, maximum)
+
+    def inquire_depth(self, queue: str) -> tuple[int, int]:
+        """Report the configured ``(current_depth, max_depth)`` (default ``(0, 0)``)."""
+        return self._depths.get(queue, (0, 0))
