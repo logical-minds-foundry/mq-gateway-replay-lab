@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from gwlab.swift.stream.selfmetrics import (
     render_audit_queue_metrics,
+    render_deviation_metrics,
     render_oldest_age_metric,
     render_segment_metrics,
 )
@@ -125,3 +126,44 @@ def test_oldest_age_metric_is_a_single_labelless_gauge() -> None:
 def test_oldest_age_metric_zero_when_window_empty() -> None:
     lines = render_oldest_age_metric(0.0)
     assert "swift_audit_oldest_age_seconds 0.0" in lines
+
+
+# --- render_deviation_metrics -------------------------------------------------
+
+
+def test_deviation_metrics_emit_z_and_ewma_series_labelled_by_family() -> None:
+    lines = render_deviation_metrics(
+        {"rejection": 14.1, "settlement": 2.3},
+        {"rejection": 0.08, "settlement": 0.03},
+    )
+    blob = "\n".join(lines)
+    assert 'swift_segment_fail_deviation{dim="reason_family",id="rejection"} 14.1' in blob
+    assert 'swift_segment_fail_deviation{dim="reason_family",id="settlement"} 2.3' in blob
+    assert 'swift_segment_fail_ewma{dim="reason_family",id="rejection"} 0.08' in blob
+    assert 'swift_segment_fail_ewma{dim="reason_family",id="settlement"} 0.03' in blob
+
+
+def test_deviation_metrics_help_and_type_emitted_once_per_metric() -> None:
+    lines = render_deviation_metrics({"rejection": 1.0}, {"rejection": 0.01})
+    for name in ("swift_segment_fail_deviation", "swift_segment_fail_ewma"):
+        assert sum(1 for line in lines if line == f"# TYPE {name} gauge") == 1
+        assert sum(1 for line in lines if line.startswith(f"# HELP {name} ")) == 1
+
+
+def test_deviation_metrics_are_sorted_for_a_stable_exposition() -> None:
+    lines = render_deviation_metrics(
+        {"settlement": 1.0, "cash": 2.0, "matching": 3.0},
+        {"settlement": 0.03, "cash": 0.005, "matching": 0.02},
+    )
+    dev_lines = [line for line in lines if line.startswith("swift_segment_fail_deviation{")]
+    ewma_lines = [line for line in lines if line.startswith("swift_segment_fail_ewma{")]
+    assert dev_lines == sorted(dev_lines)
+    assert ewma_lines == sorted(ewma_lines)
+
+
+def test_deviation_metrics_with_no_families_still_emit_help_and_type() -> None:
+    lines = render_deviation_metrics({}, {})
+    assert any(line == "# TYPE swift_segment_fail_deviation gauge" for line in lines)
+    assert any(line == "# TYPE swift_segment_fail_ewma gauge" for line in lines)
+    assert not [line for line in lines if line.startswith("swift_segment_fail_deviation{")]
+    assert not [line for line in lines if line.startswith("swift_segment_fail_ewma{")]

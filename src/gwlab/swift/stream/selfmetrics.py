@@ -55,6 +55,17 @@ _QUEUE_FILL_HELP = "Audit-queue fill ratio (CURDEPTH/MAXDEPTH); 0 when MAXDEPTH 
 _OLDEST_AGE_METRIC = "swift_audit_oldest_age_seconds"
 _OLDEST_AGE_HELP = "Age of the oldest retained instruction (the expiry-window-stability signal)."
 
+_DEVIATION_METRIC = "swift_segment_fail_deviation"
+_DEVIATION_HELP = (
+    "Binomial-proportion z-score of each reason_family's window fail-share vs its "
+    "calibrated baseline (spike detector; only families above the small-sample gate)."
+)
+_EWMA_METRIC = "swift_segment_fail_ewma"
+_EWMA_HELP = (
+    "EWMA of each reason_family's observed fail-share across sweeps "
+    "(slow-drift / silent-degradation detector)."
+)
+
 
 @dataclass
 class CollectorStats:
@@ -173,6 +184,32 @@ def render_audit_queue_metrics(depths: dict[str, tuple[int, int]]) -> list[str]:
         max_lines.append(f'{_QUEUE_MAX_METRIC}{{queue="{queue}"}} {maximum}')
         fill_lines.append(f'{_QUEUE_FILL_METRIC}{{queue="{queue}"}} {fill}')
     return lines + max_lines + fill_lines
+
+
+def render_deviation_metrics(deviations: dict[str, float], ewmas: dict[str, float]) -> list[str]:
+    """Render per-reason-family deviation scoring as the two labelled series.
+
+    Emits ``# HELP`` / ``# TYPE`` once for ``swift_segment_fail_deviation`` (the
+    binomial-proportion z-score from :meth:`SettlementState.deviations`) and once
+    for ``swift_segment_fail_ewma`` (the drift EWMA from
+    :attr:`SettlementState.family_ewmas`), then one ``{dim="reason_family",id=...}``
+    line per family, sorted for a byte-stable exposition. Both dicts may be empty
+    (no family above the small-sample gate, or none scored yet) and the headers are
+    still emitted, so neither series silently vanishes.
+    """
+    lines = [
+        f"# HELP {_DEVIATION_METRIC} {_DEVIATION_HELP}",
+        f"# TYPE {_DEVIATION_METRIC} gauge",
+    ]
+    for family, z in sorted(deviations.items()):
+        lines.append(f'{_DEVIATION_METRIC}{{dim="reason_family",id="{family}"}} {z}')
+    ewma_lines = [
+        f"# HELP {_EWMA_METRIC} {_EWMA_HELP}",
+        f"# TYPE {_EWMA_METRIC} gauge",
+    ]
+    for family, value in sorted(ewmas.items()):
+        ewma_lines.append(f'{_EWMA_METRIC}{{dim="reason_family",id="{family}"}} {value}')
+    return lines + ewma_lines
 
 
 def render_oldest_age_metric(age_seconds: float) -> list[str]:

@@ -49,6 +49,7 @@ from gwlab.swift.collect import Anomaly, DayReport
 from gwlab.swift.correlate import REASON_ORPHAN
 from gwlab.swift.reasons import ReasonFamily
 from gwlab.swift.reference import TERMINAL_NEGATIVE, State
+from gwlab.swift.stream import anomaly
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -60,6 +61,29 @@ if TYPE_CHECKING:
 #: A lifecycle is complete once it settles or ends negatively — the retention
 #: gate: a complete lifecycle is a candidate for purge once it is also expired.
 _TERMINAL: frozenset[State] = TERMINAL_NEGATIVE | {State.SETTLED}
+
+#: Calibrated per-reason-family expected fail-shares of the whole retained stream —
+#: the deviation-scoring baselines. **CONFIG CONSTANT (tunable), not sourced data:**
+#: a roll-up of the Task 3 ``REALISTIC_BOOKS`` blend and the calibration reference
+#: (``docs/settlement-failure-rate-reference.md`` §3, all JUDGMENT). Reasoning: the
+#: blended fail rate is ~0.04 (govvie 0.020 / equity 0.028 / etf 0.180 at book
+#: shares 0.45 / 0.45 / 0.10), split across the exception families — ICMA ERCC's
+#: "~27% of fails are matching-rooted" puts *matching* at ~0.02; lack-of-securities
+#: dominates the remainder (*settlement* ~0.03) over the rarer lack-of-cash (*cash*
+#: ~0.005); and the blended reject rate anchors *rejection* at ~0.004 (the doc's
+#: JUDGMENT-ONLY family — no public figure exists, flagged loudly there). ``OTHER``
+#: is benign and carries no baseline. Tune these as the calibration reference moves.
+REASON_FAMILY_BASELINES: dict[str, float] = {
+    ReasonFamily.SETTLEMENT: 0.03,
+    ReasonFamily.CASH: 0.005,
+    ReasonFamily.MATCHING: 0.02,
+    ReasonFamily.REJECTION: 0.004,
+}
+
+#: EWMA smoothing factor for the per-family observed-rate drift detector. A small
+#: alpha weights history heavily, so a slow, sustained climb (silent degradation)
+#: accumulates across sweeps rather than being washed out by any single window.
+_EWMA_ALPHA: float = 0.3
 
 
 @dataclass
@@ -102,6 +126,9 @@ class SettlementState:
         self._by_seme: dict[str, _Entry] = {}
         self._orphan_candidates: list[SwiftMessage] = []
         self._recorded: list[Anomaly] = []
+        #: Per-reason-family drift detectors, retained across ``deviations`` calls so
+        #: a slow, sustained shift accumulates rather than resetting each sweep.
+        self._ewmas: dict[str, anomaly.Ewma] = {}
 
     def ingest(self, message: SwiftMessage) -> None:
         """Fold one parsed message into the picture (design §5).
@@ -234,6 +261,47 @@ class SettlementState:
             key = (str(entry.state.current), str(entry.reason_family), entry.instruction.mt)
             counts[key] = counts.get(key, 0) + 1
         return counts
+
+    def deviations(self, baselines: dict[str, float]) -> dict[str, float]:
+        """Per-reason-family binomial-proportion z-score over the retained window.
+
+        Folds the macro :meth:`segment_counts` picture into a fail-share per family
+        (numerator = instructions classified into that family; denominator = the
+        total retained population), and for each family with a configured
+        ``baseline`` scores that share against the baseline via
+        :func:`gwlab.swift.stream.anomaly.deviation_z`. Families whose z is ``None``
+        (below the small-sample gate) are dropped — thin evidence never flags. Each
+        family's observed rate is *always* fed into its retained
+        :class:`~gwlab.swift.stream.anomaly.Ewma` (see :attr:`family_ewmas`),
+        below-sample windows included, so the slow-drift / silent-degradation case
+        accumulates across sweeps rather than only surfacing on a spike.
+        """
+        counts = self.segment_counts()
+        total = sum(counts.values())
+        fails: dict[str, int] = {}
+        for (_state, family, _msg_type), count in counts.items():
+            fails[family] = fails.get(family, 0) + count
+
+        deviations: dict[str, float] = {}
+        for family, expected_p in baselines.items():
+            observed = fails.get(family, 0)
+            rate = observed / total if total else 0.0
+            self._ewmas.setdefault(family, anomaly.Ewma(_EWMA_ALPHA)).update(rate)
+            z = anomaly.deviation_z(observed, total, expected_p)
+            if z is not None:
+                deviations[family] = z
+        return deviations
+
+    @property
+    def family_ewmas(self) -> dict[str, float]:
+        """Current EWMA of each family's observed fail-share (the drift-detector read).
+
+        The exposition seam for the ``swift_segment_fail_ewma`` series: one damped
+        rate per family that :meth:`deviations` has scored, carrying history across
+        calls so a silent, sustained climb is visible even when no single window
+        trips the z-score.
+        """
+        return {family: ewma.value for family, ewma in self._ewmas.items()}
 
     def oldest_age_seconds(self, now: datetime) -> float:
         """Age of the oldest retained instruction — the expiry-window-stability signal."""
