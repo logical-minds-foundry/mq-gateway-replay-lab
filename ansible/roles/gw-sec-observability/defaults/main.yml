@@ -39,3 +39,17 @@ gw_prometheus_url: http://localhost:9090
 gw_grafana_url: http://localhost:3000
 gw_grafana_user: admin
 gw_grafana_password: admin
+
+# --- declare-and-verify: the lab's IBM MQ exporter watches our audit queues ----
+# The board's Register C reads the standard IBM MQ Prometheus exporter's
+# filesystem-in-use (ibmmq_qmgr_*_file_system_bytes_in_use) and per-queue series
+# for the GW.SEC.* audit queues. That exporter is the LAB's, not the gateway's, so
+# this is the endorsed boundary crossing: we verify it is present and add ONLY a
+# gateway-marked block extending its monitored-queue set to GW.SEC.* — never a
+# rewrite of the lab's config. A missing exporter fails loudly (parasite boundary
+# rule), it is not silently created. Point these at the running exporter at apply
+# time (mq-metric-samples' YAML config with an objects.queues list is assumed).
+gw_sec_audit_queue_pattern: "GW.SEC.*"
+gw_sec_mq_exporter_host: "{{ gw_sec_exporter_host }}"
+gw_sec_mq_exporter_config: /etc/mqmetric/mq.yaml
+gw_sec_mq_exporter_service: mq-metric-samples
