@@ -40,7 +40,13 @@ from typing import TYPE_CHECKING, Any
 
 from gwlab.swift import observe
 from gwlab.swift.cliswift import render_exposition
-from gwlab.swift.stream.selfmetrics import CollectorStats, render_collector_metrics
+from gwlab.swift.stream.selfmetrics import (
+    CollectorStats,
+    render_audit_queue_metrics,
+    render_collector_metrics,
+    render_oldest_age_metric,
+    render_segment_metrics,
+)
 from gwlab.swift.stream.snapshot import SnapshotHolder
 from gwlab.swift.stream.state import SettlementState
 from gwlab.swift.stream.sweep import sweep
@@ -104,7 +110,9 @@ def run(args: argparse.Namespace) -> None:
     daemon HTTP thread the sole reader; the publish is an atomic reference swap, so
     the two need no lock (design §6). Each lap: time the sweep, fold its timing and
     throughput into :class:`CollectorStats`, re-report the state through the single
-    ``state -> metrics`` seam, render the settlement + collector expositions, and
+    ``state -> metrics`` seam, inquire each audit queue's depth (``inquire_depth``,
+    the only extra MQ round-trip — a non-draining MQINQ, not a browse), render the
+    settlement + collector + segmented/audit-queue/oldest-age expositions, and
     publish. The first lap is the cold rebuild; every later lap folds only new
     arrivals behind the persistent cursors.
 
@@ -130,8 +138,20 @@ def run(args: argparse.Namespace) -> None:
             now=now.timestamp(),
         )
         report = state.report(now, horizon)  # the single state -> metrics seam
+        depths = {
+            queue: messaging.inquire_depth(queue)
+            for queue in (queues.instruct_audit, queues.status_audit)
+        }
+        segmented = (
+            render_segment_metrics(state.segment_counts())
+            + render_audit_queue_metrics(depths)
+            + render_oldest_age_metric(state.oldest_age_seconds(now))
+        )
         holder.publish(
-            render_exposition(observe.metrics(report, now)) + render_collector_metrics(stats)
+            render_exposition(observe.metrics(report, now))
+            + render_collector_metrics(stats)
+            + "\n".join(segmented)
+            + "\n"
         )
         if not result.more:
             time.sleep(args.poll_seconds)

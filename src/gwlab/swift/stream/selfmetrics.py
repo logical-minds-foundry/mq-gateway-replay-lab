@@ -44,6 +44,17 @@ _BACKLOG_HELP = "New messages seen in the last sweep (is the single-threaded loo
 _PUBLISH_TS_METRIC = "swift_collector_last_publish_timestamp_seconds"
 _PUBLISH_TS_HELP = "Unix time of the last snapshot publish (staleness, not silence, on a stall)."
 
+_SEGMENT_METRIC = "swift_settlement_segment_total"
+_SEGMENT_HELP = "Retained instructions by macro segment (state x reason_family x msg_type)."
+_QUEUE_DEPTH_METRIC = "swift_audit_queue_depth"
+_QUEUE_DEPTH_HELP = "Current depth (CURDEPTH) of each GW.SEC.* audit queue via MQINQ."
+_QUEUE_MAX_METRIC = "swift_audit_queue_max_depth"
+_QUEUE_MAX_HELP = "Configured maximum depth (MAXDEPTH) of each GW.SEC.* audit queue."
+_QUEUE_FILL_METRIC = "swift_audit_queue_fill_ratio"
+_QUEUE_FILL_HELP = "Audit-queue fill ratio (CURDEPTH/MAXDEPTH); 0 when MAXDEPTH is unknown."
+_OLDEST_AGE_METRIC = "swift_audit_oldest_age_seconds"
+_OLDEST_AGE_HELP = "Age of the oldest retained instruction (the expiry-window-stability signal)."
+
 
 @dataclass
 class CollectorStats:
@@ -113,3 +124,64 @@ def render_collector_metrics(stats: CollectorStats) -> str:
     append_gauge(lines, _PUBLISH_TS_METRIC, _PUBLISH_TS_HELP, stats.last_publish_timestamp)
 
     return "\n".join(lines) + "\n"
+
+
+def render_segment_metrics(counts: dict[tuple[str, str, str], int]) -> list[str]:
+    """Render :meth:`SettlementState.segment_counts` as the labelled segment gauge.
+
+    Emits ``# HELP`` / ``# TYPE`` once for ``swift_settlement_segment_total`` and
+    then one labelled line per ``(state, reason_family, msg_type)`` key. Keys are
+    sorted so the exposition is byte-stable across cycles with the same picture;
+    the label domains are all bounded (design §8), so cardinality stays macro.
+    An empty picture still emits the header, so the series never silently vanishes.
+    """
+    lines = [
+        f"# HELP {_SEGMENT_METRIC} {_SEGMENT_HELP}",
+        f"# TYPE {_SEGMENT_METRIC} gauge",
+    ]
+    for (state, reason_family, msg_type), count in sorted(counts.items()):
+        labels = f'state="{state}",reason_family="{reason_family}",msg_type="{msg_type}"'
+        lines.append(f"{_SEGMENT_METRIC}{{{labels}}} {count}")
+    return lines
+
+
+def render_audit_queue_metrics(depths: dict[str, tuple[int, int]]) -> list[str]:
+    """Render each audit queue's ``(current, max)`` depth as the fill-health series.
+
+    Emits ``swift_audit_queue_depth``, ``swift_audit_queue_max_depth``, and
+    ``swift_audit_queue_fill_ratio`` — each with its ``# HELP`` / ``# TYPE`` once,
+    then one ``{queue=...}`` line per queue, sorted for a stable exposition. The
+    fill ratio is ``current / max``, guarded to ``0`` when ``max`` is ``0`` (an
+    unconfigured or never-inquired queue reads ``(0, 0)``) so it never divides by
+    zero.
+    """
+    lines = [
+        f"# HELP {_QUEUE_DEPTH_METRIC} {_QUEUE_DEPTH_HELP}",
+        f"# TYPE {_QUEUE_DEPTH_METRIC} gauge",
+    ]
+    max_lines = [
+        f"# HELP {_QUEUE_MAX_METRIC} {_QUEUE_MAX_HELP}",
+        f"# TYPE {_QUEUE_MAX_METRIC} gauge",
+    ]
+    fill_lines = [
+        f"# HELP {_QUEUE_FILL_METRIC} {_QUEUE_FILL_HELP}",
+        f"# TYPE {_QUEUE_FILL_METRIC} gauge",
+    ]
+    for queue, (current, maximum) in sorted(depths.items()):
+        fill = current / maximum if maximum else 0
+        lines.append(f'{_QUEUE_DEPTH_METRIC}{{queue="{queue}"}} {current}')
+        max_lines.append(f'{_QUEUE_MAX_METRIC}{{queue="{queue}"}} {maximum}')
+        fill_lines.append(f'{_QUEUE_FILL_METRIC}{{queue="{queue}"}} {fill}')
+    return lines + max_lines + fill_lines
+
+
+def render_oldest_age_metric(age_seconds: float) -> list[str]:
+    """Render :meth:`SettlementState.oldest_age_seconds` as the single age gauge.
+
+    A label-free gauge, so it folds through the shared
+    :func:`gwlab.swift.exposition.append_gauge` builder like the collector's own
+    single-value series.
+    """
+    lines: list[str] = []
+    append_gauge(lines, _OLDEST_AGE_METRIC, _OLDEST_AGE_HELP, age_seconds)
+    return lines
