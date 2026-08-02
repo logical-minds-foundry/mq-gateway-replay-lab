@@ -44,11 +44,12 @@ from gwlab.swift.stream.selfmetrics import (
     CollectorStats,
     render_audit_queue_metrics,
     render_collector_metrics,
+    render_deviation_metrics,
     render_oldest_age_metric,
     render_segment_metrics,
 )
 from gwlab.swift.stream.snapshot import SnapshotHolder
-from gwlab.swift.stream.state import SettlementState
+from gwlab.swift.stream.state import REASON_FAMILY_BASELINES, SettlementState
 from gwlab.swift.stream.sweep import sweep
 from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
 
@@ -142,8 +143,10 @@ def run(args: argparse.Namespace) -> None:
             queue: messaging.inquire_depth(queue)
             for queue in (queues.instruct_audit, queues.status_audit)
         }
+        deviations = state.deviations(REASON_FAMILY_BASELINES)  # updates the family EWMAs
         segmented = (
             render_segment_metrics(state.segment_counts())
+            + render_deviation_metrics(deviations, state.family_ewmas)
             + render_audit_queue_metrics(depths)
             + render_oldest_age_metric(state.oldest_age_seconds(now))
         )
