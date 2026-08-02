@@ -38,6 +38,9 @@ _CMQC = SimpleNamespace(
     MQOO_OUTPUT=0x10,
     MQOO_INPUT_SHARED=0x20,
     MQOO_BROWSE=0x40,
+    MQOO_INQUIRE=0x80,
+    MQIA_CURRENT_Q_DEPTH=3,
+    MQIA_MAX_Q_DEPTH=15,
     MQPMO_SYNCPOINT=0x2,
     MQPMO_NEW_MSG_ID=0x400,
     MQGMO_SYNCPOINT=0x2,
@@ -137,6 +140,8 @@ class _FakePyMqi:
         self.scripts: dict[str, list[Any]] = {}
         self.puts: list[dict[str, Any]] = []
         self.queues: list[Any] = []
+        # Per-queue MQINQ depth answers: queue name -> (current, max).
+        self.depths: dict[str, tuple[int, int]] = {}
 
         module = self
 
@@ -174,6 +179,10 @@ class _FakePyMqi:
                         "options": pmo.Options,
                     }
                 )
+
+            def inquire(self, *attrs: int) -> tuple[int, ...]:
+                self.inquire_attrs = attrs
+                return module.depths[self.name]
 
             def close(self) -> None:
                 self.closed = True
@@ -423,6 +432,24 @@ def test_clear_drains_then_commits_and_counts(fake_pymqi: _FakePyMqi) -> None:
     removed = adapter.clear(queue)
     assert removed == 2
     assert adapter._qmgr.committed == 1
+
+
+# --- inquire_depth (MQINQ CURDEPTH/MAXDEPTH) ----------------------------------
+
+
+def test_inquire_depth_opens_for_inquire_and_reads_curdepth_maxdepth(
+    fake_pymqi: _FakePyMqi,
+) -> None:
+    adapter = _connect(fake_pymqi)
+    queue = "GW.SEC.INSTRUCT.AUDIT"
+    fake_pymqi.depths[queue] = (1200, 5000)
+    assert adapter.inquire_depth(queue) == (1200, 5000)
+    handle = fake_pymqi.queues[0]
+    assert handle.opts == _CMQC.MQOO_INQUIRE  # opened for inquire, not get/put
+    assert handle.inquire_attrs == (
+        _CMQC.MQIA_CURRENT_Q_DEPTH,
+        _CMQC.MQIA_MAX_Q_DEPTH,
+    )
 
 
 # --- _put_time: both branches -------------------------------------------------
