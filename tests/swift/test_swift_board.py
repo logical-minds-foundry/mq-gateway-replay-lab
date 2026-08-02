@@ -25,14 +25,16 @@ def test_board_identity_and_shape() -> None:
     # header + 6 KPI stats
     # + Register A: header + efficiency stat + 2 fail bargauges
     # + anomalies bargauge + 2 latency timeseries
+    # + Register B: header + deviation bargauge + rejection-amplification timeseries
+    #   + EWMA-trend timeseries
     # + Register C: header + 2 audit bargauges + oldest-age stat + 2 timeseries
     # + collector-health: header + 2 stats + 3 timeseries.
-    assert len(board["panels"]) == 26
+    assert len(board["panels"]) == 30
     panel_types = [p["type"] for p in board["panels"]]
     assert panel_types.count("stat") == 10
-    assert panel_types.count("bargauge") == 5
-    assert panel_types.count("timeseries") == 7
-    assert panel_types.count("text") == 4
+    assert panel_types.count("bargauge") == 6
+    assert panel_types.count("timeseries") == 9
+    assert panel_types.count("text") == 5
 
 
 def test_kpi_row_is_operational_and_does_not_repeat_the_distribution() -> None:

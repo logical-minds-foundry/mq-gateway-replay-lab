@@ -14,6 +14,10 @@ Design notes — the board reads as **registers**, each answering one question:
   ``msg_type`` — EACH on its own panel and its own scale, never co-plotted with
   settled volume. This replaces the retired settled-dominated state-distribution
   bar, where the tall ``settled`` bar buried every signal beside it.
+- **Register B (exceptional-event detection):** per-reason-family deviation
+  scoring — a binomial z-score panel that colors red at z ≥ 3, a rare-event
+  amplification sparkline for the rare ``rejection`` family (its z-score makes a
+  0→N burst loud), and the EWMA slow-drift trend that catches silent degradation.
 - **Register C (infra health):** the audit copy watching its own plumbing — audit
   queue depth and fill ratio, the oldest-open-instruction age (the expiry-window
   signal), an expiry-window-stability timeseries of depth over time, and the audit
@@ -26,8 +30,6 @@ Design notes — the board reads as **registers**, each answering one question:
   retired; the streaming collector's ``swift_collector_cycle_seconds`` (fold cost,
   off the scrape path) and ``swift_collector_bootstrap_seconds`` (recovery time)
   carry the cost story in the collector-health section.
-
-(Register B — per-dimension deviation scoring — arrives in Phase 2.)
 
 Pure dict-building, no I/O — so it is fully deterministic and unit-tested; the
 network deploy lives in ``deploy_http.py``.
@@ -58,6 +60,24 @@ _FAILS_BY_FAMILY = (
     'sum by (reason_family) (swift_settlement_segment_total{state=~"failed|rejected"})'
 )
 _FAILS_BY_MSGTYPE = 'sum by (msg_type) (swift_settlement_segment_total{state=~"failed|rejected"})'
+
+# --- Register B — exceptional-event detection ---------------------------------
+# The Task-9 per-reason-family deviation scoring: a binomial-proportion z-score of
+# each family's window fail-share against its calibrated baseline. The deviation
+# panel breaks out by ``id`` (the family) and colors red at z >= 3, so a three-sigma
+# family jump can never read as a benign green bar. The rejection family is rare, so
+# its z-score amplifies a 0->N burst loud — it gets its own sparkline. The EWMA
+# series is the slow-drift / silent-degradation companion. All ``max by (id)`` /
+# ``max(...)`` so a Native-HA instance-swap never doubles a value.
+_DEVIATION_BY_FAMILY = 'max by (id) (swift_segment_fail_deviation{dim="reason_family"})'
+_REJECTION_DEVIATION = 'max(swift_segment_fail_deviation{dim="reason_family",id="rejection"})'
+_EWMA_BY_FAMILY = 'max by (id) (swift_segment_fail_ewma{dim="reason_family"})'
+# z-score threshold steps: calm below 2, a warning band, then red at three sigma.
+_DEVIATION_THRESHOLDS: list[dict[str, Any]] = [
+    {"color": "green", "value": None},
+    {"color": "yellow", "value": 2},
+    {"color": "red", "value": 3},
+]
 
 # --- Register C — audit-queue infra health ------------------------------------
 # The MQ-native audit copy's own health: how deep the audit queues sit, how close
@@ -151,15 +171,32 @@ def _stat(
 
 
 def _bargauge(
-    pid: int, title: str, grid: dict[str, int], expr: str, legend: str, ds_uid: str
+    pid: int,
+    title: str,
+    grid: dict[str, int],
+    expr: str,
+    legend: str,
+    ds_uid: str,
+    *,
+    thresholds: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    # With ``thresholds`` the bars color by absolute steps (Register B's z-score
+    # panel, where z >= 3 must read red); otherwise the classic categorical palette.
+    if thresholds is not None:
+        defaults: dict[str, Any] = {
+            "unit": "short",
+            "color": {"mode": "thresholds"},
+            "thresholds": {"mode": "absolute", "steps": thresholds},
+        }
+    else:
+        defaults = {"unit": "short", "color": {"mode": "palette-classic"}}
     return {
         "id": pid,
         "type": "bargauge",
         "title": title,
         "gridPos": grid,
         "datasource": _ds(ds_uid),
-        "fieldConfig": {"defaults": {"unit": "short", "color": {"mode": "palette-classic"}}},
+        "fieldConfig": {"defaults": defaults},
         "options": {
             "orientation": "horizontal",
             "displayMode": "gradient",
@@ -284,6 +321,45 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         _timeseries(14, "Lifecycle latency (p95)", _grid(0, 34, 24, 9), [p95_target], ds_uid),
     ]
 
+    # Register B — exceptional-event detection. The per-reason-family z-score
+    # (Task 9): a deviation bargauge that colors red at z >= 3 (a three-sigma family
+    # jump can never read green), a rare-event amplification sparkline for the rare
+    # rejection family (its z-score makes a 0->N burst loud), and the EWMA
+    # slow-drift trend that catches silent degradation the spike detector misses.
+    register_b_header = (
+        "## Register B — exceptional-event detection\n"
+        "Per-reason-family deviation (a binomial z-score, red at z ≥ 3), a rare-event "
+        "amplification sparkline for the rejection family, and the EWMA slow-drift trend."
+    )
+    panels += [
+        _text(15, _grid(0, 43, 24, 2), register_b_header),
+        _bargauge(
+            16,
+            "Deviation by reason family (z-score)",
+            _grid(0, 45, 12, 8),
+            _DEVIATION_BY_FAMILY,
+            "{{id}}",
+            ds_uid,
+            thresholds=_DEVIATION_THRESHOLDS,
+        ),
+        _timeseries(
+            17,
+            "Rejection burst amplification (z-score over time)",
+            _grid(12, 45, 12, 8),
+            [_target(_REJECTION_DEVIATION, "rejection z", ds_uid)],
+            ds_uid,
+            unit="short",
+        ),
+        _timeseries(
+            18,
+            "Fail-share EWMA slow-drift trend",
+            _grid(0, 53, 24, 8),
+            [_target(_EWMA_BY_FAMILY, "{{id}}", ds_uid)],
+            ds_uid,
+            unit="percentunit",
+        ),
+    ]
+
     # Register C — audit-queue infra health: the audit copy's own plumbing. Depth,
     # fill, oldest-open age, the expiry-window-stability trend, and the disk/log
     # footprint from the MQ exporter's filesystem-in-use series (declare-and-verify;
@@ -298,32 +374,32 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         _target(_LOG_FS_IN_USE.format(qmgr=qmgr), "recovery log filesystem", ds_uid),
     ]
     panels += [
-        _text(15, _grid(0, 43, 24, 2), register_c_header),
-        _bargauge(16, "Audit queue depth", _grid(0, 45, 8, 7), _AUDIT_DEPTH, "{{queue}}", ds_uid),
+        _text(19, _grid(0, 61, 24, 2), register_c_header),
+        _bargauge(20, "Audit queue depth", _grid(0, 63, 8, 7), _AUDIT_DEPTH, "{{queue}}", ds_uid),
         _bargauge(
-            17, "Audit queue fill ratio", _grid(8, 45, 8, 7), _AUDIT_FILL, "{{queue}}", ds_uid
+            21, "Audit queue fill ratio", _grid(8, 63, 8, 7), _AUDIT_FILL, "{{queue}}", ds_uid
         ),
         _stat(
-            18,
+            22,
             "Oldest open instruction age",
-            _grid(16, 45, 8, 7),
+            _grid(16, 63, 8, 7),
             _OLDEST_AGE,
             ds_uid,
             unit="s",
             color="yellow",
         ),
         _timeseries(
-            19,
+            23,
             "Audit queue depth over time (expiry-window stability)",
-            _grid(0, 52, 12, 8),
+            _grid(0, 70, 12, 8),
             [_target(_AUDIT_DEPTH_OVER_TIME, "{{queue}}", ds_uid)],
             ds_uid,
             unit="short",
         ),
         _timeseries(
-            20,
+            24,
             "Audit disk & log footprint (MQ exporter)",
-            _grid(12, 52, 12, 8),
+            _grid(12, 70, 12, 8),
             fs_targets,
             ds_uid,
             unit="decbytes",
@@ -339,36 +415,36 @@ def build_settlement_board(qmgr: str, ds_uid: str = "${DS_PROMETHEUS}") -> dict[
         "ingest throughput, sweep backlog, and disk contention under real volume."
     )
     panels += [
-        _text(21, _grid(0, 60, 24, 2), health_header),
+        _text(25, _grid(0, 78, 24, 2), health_header),
         _stat(
-            22,
+            26,
             "Recovery time (last cold-reload)",
-            _grid(0, 62, 6, 7),
+            _grid(0, 80, 6, 7),
             _BOOTSTRAP,
             ds_uid,
             unit="s",
             color="blue",
         ),
-        _stat(23, "Sweep backlog", _grid(6, 62, 6, 7), _BACKLOG, ds_uid, color="text"),
+        _stat(27, "Sweep backlog", _grid(6, 80, 6, 7), _BACKLOG, ds_uid, color="text"),
         _timeseries(
-            24,
+            28,
             "Fold cycle time (p95, off the scrape path)",
-            _grid(12, 62, 12, 7),
+            _grid(12, 80, 12, 7),
             [_target(_CYCLE_P95, "cycle p95", ds_uid)],
             ds_uid,
         ),
         _timeseries(
-            25,
+            29,
             "Messages ingested (rate)",
-            _grid(0, 69, 12, 7),
+            _grid(0, 87, 12, 7),
             [_target(_INGEST_RATE, "ingest/s", ds_uid)],
             ds_uid,
             unit="cps",
         ),
         _timeseries(
-            26,
+            30,
             "Disk IO utilisation",
-            _grid(12, 69, 12, 7),
+            _grid(12, 87, 12, 7),
             [_target(_DISK_IO, "{{instance}}", ds_uid)],
             ds_uid,
             unit="percentunit",
