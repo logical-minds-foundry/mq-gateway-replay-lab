@@ -148,10 +148,21 @@ Load-bearing section — the debt knowingly taken.
   `gw-sec-collector` role. It worked and is documented (Appendix A), but it's a
   one-off, not the reproducible role path.
 
-- **This epic absorbed a dead end.** COA/COD (#105) proved incompatible with the
-  streaming-queue mechanism (it needs app-side report options that violate the
-  transparency invariant); #175 took over its dashboard/realism intent. Context, not
-  this epic's debt, but it explains why #175 exists.
+- **This epic absorbed a dead end — for a subtler reason than transparency.**
+  COA/COD (#105) was dropped **not** because it intrudes on the app — we were willing
+  to accept the app setting the report flags as a minor intrusion — but because
+  **COA/COD reporting is fundamentally incompatible with the streaming-queue
+  remote-queuing topology.** Report messages are generated only for delivery to a
+  *local* queue. In this design the message streams to a local audit queue and is also
+  put to a transmit queue bound for the counterparty; the streamed copy has its report
+  options stripped, and the transmit path produces no app-visible COA/COD for the
+  remote delivery. So the only report generated is a COA for the *audit-queue* put —
+  timestamped identically to the original put, hence useless — and never a COD (nothing
+  is delivered *from* the audit queue). You cannot run both the streaming-audit
+  architecture and COA/COD reporting in one flow. **Restoring the transparency
+  invariant was then a bonus of abandoning it, not the reason.** #175 took over #105's
+  dashboard/realism intent — context, not this epic's debt, but it explains why #175
+  exists.
 
 ---
 
