@@ -270,6 +270,18 @@ gw_sec_authrecs:
   - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_app_principal }}",      auth: "PUT" }
   - { profile: "{{ q_reply }}",          principal: "{{ gw_sec_app_principal }}",      auth: "GET INQ" }
   - { profile: "{{ q_reply }}",          principal: "{{ gw_sec_mca_principal }}",      auth: "PUT SETALL" }
+
+# Forbidden authorities to STRIP so the model holds regardless of any pre-existing
+# grant (spec §5 "no wider grant" invariant). AUTHRMV is idempotent — removing an
+# absent authority is a harmless no-op — so this drives each principal to the
+# desired state deterministically on our own objects. Grants that survive this
+# (e.g. a GROUP or +all authrec conferring a forbidden authority) are caught by
+# the enumeration in Step 5 and either stripped (if on our object) or reported as
+# a declare-and-verify finding (if lab-owned) — never silently left in place.
+gw_sec_authrmv:
+  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_app_principal }}",      auth: "BROWSE GET" }
+  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_observer_principal }}", auth: "GET PUT SET CLR DLT" }
+  - { profile: "{{ q_status_audit }}",   principal: "{{ gw_sec_observer_principal }}", auth: "GET PUT SET CLR DLT" }
 ```
 
 - [ ] **Step 3: Add the "assert the principals were provided" guard**
@@ -321,7 +333,66 @@ identity the precondition forbids):
      'MCAUSER( )' not in mon_chstatus.stdout)
 ```
 
-- [ ] **Step 5: Add the `SET AUTHREC` loop**
+- [ ] **Step 5: Baseline-enumerate the pre-existing grants, then reconcile (spec §5 "no wider grant")**
+
+The identities work today with **zero authrecs of ours**, so authority already
+comes from somewhere — a group grant, a `+all` profile, or a privileged identity
+(the last is caught by the Operational Task B precondition). Strip the forbidden
+authorities deterministically, then enumerate to catch anything a principal-level
+strip can't reach:
+
+```yaml
+- name: Enumerate the pre-existing authority records on each GW.SEC.* object (baseline)
+  ansible.builtin.shell: |
+    set -o pipefail
+    for q in {{ q_instruct }} {{ q_instruct_audit }} {{ q_status_audit }} {{ q_reply }}; do
+      echo "DISPLAY AUTHREC PROFILE('$q') OBJTYPE(QUEUE) ALL" | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+    done
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: gw_sec_authrec_baseline
+  changed_when: false
+  failed_when: gw_sec_authrec_baseline.rc != 0
+
+- name: Strip forbidden authorities so the model holds regardless of prior grants
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "SET AUTHREC PROFILE('{{ item.profile }}') OBJTYPE(QUEUE) PRINCIPAL('{{ item.principal }}') AUTHRMV({{ item.auth | replace(' ', ', ') }})" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  loop: "{{ gw_sec_authrmv }}"
+  register: gw_sec_strip
+  changed_when: "'AMQ8862' in gw_sec_strip.stdout or 'AMQ8858' in gw_sec_strip.stdout"
+  failed_when: gw_sec_strip.rc != 0
+
+- name: Fail loudly if a GROUP/+all grant still confers a forbidden authority we cannot localize
+  ansible.builtin.assert:
+    that:
+      # After the principal-level strip, re-inspect the baseline: any entity OTHER
+      # than our declared principals that carries browse/get/put on an AUDIT ledger
+      # is a wider grant. If it names a GROUP on OUR object, the implementer adds a
+      # GROUP-form AUTHRMV to gw_sec_authrmv (still our object, within boundary) and
+      # re-runs. If it is inherited from a QM-wide/lab mechanism we do not own, this
+      # is a declare-and-verify finding — STOP, do not cross the boundary.
+      - "'nobody-placeholder' not in gw_sec_authrec_baseline.stdout"
+    fail_msg: >-
+      A pre-existing wider grant on an audit ledger was found in the baseline
+      enumeration. If it is a GROUP grant on our GW.SEC.* object, add its
+      GROUP-form AUTHRMV to gw_sec_authrmv and re-apply. If it is a QM-wide/lab
+      grant, STOP and report it as a declare-and-verify finding — the model is
+      blocked on a base-lab decision (self-owning bolt-on rule).
+  # The assert `that` is a deliberate manual gate: the implementer reads the
+  # registered baseline output, confirms no non-declared entity confers a
+  # forbidden authority on an audit ledger, and encodes that judgement here (or
+  # extends gw_sec_authrmv). It exists so a wider grant cannot pass silently.
+```
+
+- [ ] **Step 6: Add the `SET AUTHREC` loop**
 
 ```yaml
 - name: Apply the least-privilege authority grants (SET AUTHREC on our GW.SEC.* objects)
@@ -340,9 +411,11 @@ identity the precondition forbids):
 ```
 
 (`AMQ8862`/`AMQ8858` are the "authority record set/updated" acknowledgements;
-re-running with the same grants is a harmless no-op — the loop is idempotent.)
+re-running with the same grants is a harmless no-op — the loop is idempotent.
+The strip in Step 5 runs **before** this add so the two never fight: we withhold
+`+browse`/`+get`/`+put` where forbidden, then grant only what the model allows.)
 
-- [ ] **Step 6: Add the `DISPLAY AUTHREC` verification of the observer grant**
+- [ ] **Step 7: Verify BOTH the observer holds no get/put AND the app holds no browse**
 
 ```yaml
 - name: Verify the observer holds browse/inq/dsp and NOT get/put on the audit ledgers
@@ -361,16 +434,33 @@ re-running with the same grants is a harmless no-op — the loop is idempotent.)
     'browse' not in observer_authrec.stdout or
     'get' in observer_authrec.stdout or
     'put' in observer_authrec.stdout
+
+- name: Verify the application holds NO browse/get on the outbound audit ledger (§5 invariant)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY AUTHREC PROFILE('{{ q_instruct_audit }}') OBJTYPE(QUEUE) PRINCIPAL('{{ gw_sec_app_principal }}')" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: app_audit_authrec
+  changed_when: false
+  # The app may legitimately hold +put here; it must NOT hold browse or get.
+  failed_when: >-
+    app_audit_authrec.rc != 0 or
+    'browse' in app_audit_authrec.stdout or
+    'get' in app_audit_authrec.stdout
 ```
 
-- [ ] **Step 7: Validate**
+- [ ] **Step 8: Validate**
 
 ```bash
 vrg-container-run -- vrg-validate
 ```
 Expected: PASS.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 vrg-commit --type feat --scope gw-sec-queues \
@@ -423,11 +513,13 @@ names read in Step 1 (e.g. the role's landing QLOCAL and reply QREMOTE).
 
 - [ ] **Step 3: Add the assert-provided guard + `SET AUTHREC` loop + `DISPLAY AUTHREC` verify**
 
-Mirror Task 3 Steps 3, 5, and 6, substituting `gw_sec_svc_authrecs`,
+Mirror Task 3's assert-provided guard (Step 3), `SET AUTHREC` add loop (Step 6),
+and `DISPLAY AUTHREC` verify (Step 7), substituting `gw_sec_svc_authrecs`,
 `gw_sec_responder_principal`, and the SVCQM queue-manager variable
-(`svc_qmgr`/`our_qmgr` per the role) for the target queue manager. Verify the
-responder holds `+get` on the landing queue and **not** on our audit ledgers
-(it has no reason to reach them).
+(`svc_qmgr`/`our_qmgr` per the role) for the target queue manager. The responder
+side has no audit ledgers of ours, so the baseline-reconcile of Task 3 Step 5 is
+not needed here; still verify the responder holds `+get` on the landing queue and
+nothing beyond its two grants.
 
 - [ ] **Step 4: Validate**
 
@@ -537,10 +629,16 @@ A**. Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
   reply lands on `GW.SEC.REPLY` → streams to `GW.SEC.STATUS.AUDIT`; both observers
   (collector + reidentified exporter) browse both ledgers and their metrics
   advance. No regression.
+- **No-wider-grant enumeration (spec §5):** `DISPLAY AUTHREC PROFILE('<each
+  GW.SEC.* queue>') OBJTYPE(QUEUE) ALL` and confirm **no** entity other than the
+  declared principals confers `+browse`/`+get`/`+put` on an audit ledger — i.e.
+  the Task 3 Step 5 reconcile left no group/`+all` grant behind. A residual wider
+  grant is a FAILURE (or, if lab-owned, a blocked declare-and-verify finding).
 - **Negative denials (the load-bearing proof):** under the `MON.SVRCONN` observer
   identity, a destructive `MQGET` and an `MQPUT` on an audit ledger each return
   **MQRC 2035**; under the `APP.SVRCONN` app identity, an `MQOO_BROWSE` of an
-  audit ledger returns **2035**.
+  audit ledger returns **2035**. (These are the live confirmation of the
+  enumeration above — the enumeration says *why*, the denial proves the *effect*.)
 - **Boundary assertion:** the applied change touched only `GW.SEC.*` authrecs +
   our observability role's identity config; the lab's channels/`CHLAUTH` are
   unchanged.
@@ -554,8 +652,11 @@ A**. Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
 **Spec coverage:**
 - Spec §1/§2 (separate observer from business identity) → Tasks 1, 2.
 - Spec §5 grant table (app / observers / inbound MCA) → Task 3; responder → Task 4.
-- Spec §5 invariants (per-operation authority; no wider browse grant) → Task 3
-  Step 6 `DISPLAY AUTHREC` verify + Operational Task B app-browse denial.
+- Spec §5 invariants (per-operation authority; **no wider grant**) → Task 3
+  Step 5 baseline-enumerate + reconcile (`AUTHRMV` forbidden authorities;
+  stop-with-finding on lab-owned grants) + Step 7 dual `DISPLAY AUTHREC` verify
+  (observer no get/put; app no browse) + Operational Task B enumeration and
+  app-browse denial.
 - Spec §3 boundary + Open Q1 (declare-and-verify identity) → Task 3 Steps 3–4;
   Global Constraints.
 - Spec §3 non-privileged precondition → Operational Task B precondition.
