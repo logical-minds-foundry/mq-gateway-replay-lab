@@ -32,10 +32,23 @@ design lives in `logical-minds-foundry/.github` at
   app-team lead", "the alternate log hosts", "Counterparty A/B/…", invented
   queue/host names. This repo is **private and client-adjacent** — deliberately
   **not** part of the public `mq-resiliency-*` OSS family.
-- **Parasite / boundary rule.** Configure **only what this repo owns** (its own
-  queues, its own apps) and **declare-and-verify** what it doesn't (the QM, the
-  counterparty). Never mutate the lab's config; never restart the lab's QM. A
-  failed precondition is a loud signal, not a silent fix.
+- **Self-owning bolt-on rule** (formerly "parasite / boundary rule"). This repo
+  is a **self-owning bolt-on** on the shared lab. It **may change the underlying
+  lab whatever it needs to** — the rule is *not* "don't touch it." What it
+  **must** do: **automate 100%** of (a) its own setup and (b) **every change it
+  makes to the underlying lab**, and **own** those changes so they **replay
+  cleanly on a from-scratch rebuild** (reproducibility is the goal). Changes that
+  must live in the **underlying/generic lab's** code stay **generic and
+  general-purpose** — the base lab never carries bolt-on-specific knowledge, only
+  generic capabilities the bolt-on builds on. Automated **teardown** is
+  good-citizen nice-to-have, lower priority than setup + reproducibility. This is
+  a **scale-of-one** environment: the rule enforces disciplined, reproducible,
+  fully-automated config ownership — not protection of other tenants. The
+  bolt-on's own Ansible + `gwlab` CLI *are* that ownership mechanism. Adding, say,
+  an `MSGEXIT` to an existing lab channel is fine when it is automated and owned
+  (it may invalidate an underlying test — acceptable). Still: **declare-and-verify**
+  what the repo doesn't own before relying on it, and a failed precondition is a
+  loud signal, not a silent fix.
 - **Reuse none of the lab's tooling.** `mqlab` and the HA/DR `validate`
   framework stay the lab's. This repo ships its **own** small CLI (`gwlab`) and
   its own responder app.
