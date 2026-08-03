@@ -96,8 +96,8 @@ _AUDIT_DEPTH_OVER_TIME = "max by (queue) (swift_audit_queue_depth)"
 # data and recovery-log stores. This is declare-and-verify against the lab-owned
 # MQ exporter (the endorsed boundary crossing), NOT the node-exporter disk-IO
 # contention series (that lives in the collector-health section below).
-_QMGR_FS_IN_USE = 'max(ibmmq_qmgr_queue_manager_file_system_bytes_in_use{{qmgr="{qmgr}"}})'
-_LOG_FS_IN_USE = 'max(ibmmq_qmgr_log_file_system_bytes_in_use{{qmgr="{qmgr}"}})'
+_QMGR_FS_IN_USE = 'max(ibmmq_qmgr_queue_manager_file_system_in_use_bytes{{qmgr="{qmgr}"}})'
+_LOG_FS_IN_USE = 'max(ibmmq_qmgr_log_file_system_in_use_bytes{{qmgr="{qmgr}"}})'
 
 # Collector-health (the watcher watching itself, §7).
 _BOOTSTRAP = "max(swift_collector_bootstrap_seconds)"
