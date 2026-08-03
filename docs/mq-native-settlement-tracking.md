@@ -354,6 +354,31 @@ repo's own automation, scraped by Prometheus). It shows two layers:
   as *staleness*, not silence. This is unusually complete for a component of this
   kind: the watcher is itself observed.
 
+### 12.1 Realism and the signal-in-noise problem
+
+The board above proves the *mechanism*, but a demonstration that floods the display
+with synthetic failures is the inverse of operational reality, where a well-run flow
+is mostly green and the challenge is spotting a fraction-of-a-percent signal buried in
+background noise. The follow-on work calibrates the traffic to real-world settlement
+rates and reworks the board around one insight: **real incidents are *concentrations*
+(one reason-code family, one message type, one settlement window), while routine noise
+is *diffuse*.** So the board detects **deviation-per-macro-dimension**, not raw failure
+volume — a binomial-proportion z-score for spikes and an EWMA for slow drift — over a
+deliberately **macro, non-sensitive** metric surface (state / message-type /
+reason-family / time; never counterparty or instrument). A third register reports the
+health of the audit queues themselves — depth, fill-ratio headroom, expiry-window
+stability, and the disk/log footprint of the audit copy. Three companion documents
+carry the detail:
+
+- [`settlement-failure-rate-reference.md`](settlement-failure-rate-reference.md) — the
+  sourced calibration data (ESMA / DTCC / ICMA / T2S), data separated from judgment.
+- [`observability-primitives.md`](observability-primitives.md) — the reusable pattern
+  (concentration/deviation detection; bounded dims → labels+PromQL, unbounded/subtle →
+  collector-side scoring; the macro signal points to where the full-detail system
+  drills down).
+- [`scenario-catalog/`](scenario-catalog/index.md) — seven reproducible failure
+  episodes, each with its macro signature and the register that reveals it.
+
 ## 13. Beyond MT540–548 — the deferred generalization
 
 This recommendation is built to the **public ISO 15022 MT540–548** rendering. The
