@@ -232,6 +232,10 @@ def _timeseries(
     *,
     unit: str = "s",
 ) -> dict[str, Any]:
+    # Distinct refId per target — Grafana collides same-refId targets into one, so a
+    # multi-query panel (e.g. qmgr + log footprint) renders "No data" without this.
+    for index, target in enumerate(targets):
+        target["refId"] = chr(ord("A") + index)
     return {
         "id": pid,
         "type": "timeseries",
