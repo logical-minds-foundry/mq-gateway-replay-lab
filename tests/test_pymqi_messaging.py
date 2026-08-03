@@ -151,6 +151,7 @@ class _FakePyMqi:
                 self.opts = opts
                 self.closed = False
                 self.get_options: list[int] = []
+                self.inquire_calls: list[int] = []
                 module.queues.append(self)
 
             def get(self, _buf: Any, md: _FakeMD, gmo: _FakeGMO) -> bytes:
@@ -180,9 +181,12 @@ class _FakePyMqi:
                     }
                 )
 
-            def inquire(self, *attrs: int) -> tuple[int, ...]:
-                self.inquire_attrs = attrs
-                return module.depths[self.name]
+            def inquire(self, attr: int) -> int:
+                # Real pymqi Queue.inquire takes ONE selector per call and returns
+                # that attribute's value — mirror it so a multi-arg regression fails.
+                self.inquire_calls.append(attr)
+                current, maximum = module.depths[self.name]
+                return current if attr == _CMQC.MQIA_CURRENT_Q_DEPTH else maximum
 
             def close(self) -> None:
                 self.closed = True
@@ -446,10 +450,10 @@ def test_inquire_depth_opens_for_inquire_and_reads_curdepth_maxdepth(
     assert adapter.inquire_depth(queue) == (1200, 5000)
     handle = fake_pymqi.queues[0]
     assert handle.opts == _CMQC.MQOO_INQUIRE  # opened for inquire, not get/put
-    assert handle.inquire_attrs == (
+    assert handle.inquire_calls == [
         _CMQC.MQIA_CURRENT_Q_DEPTH,
         _CMQC.MQIA_MAX_Q_DEPTH,
-    )
+    ]
 
 
 # --- _put_time: both branches -------------------------------------------------
