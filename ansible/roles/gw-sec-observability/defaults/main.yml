@@ -11,7 +11,7 @@
 # --- required apply-time values (no misleading defaults; fail loudly) ----------
 gw_sec_exporter_qmgr: ""       # REQUIRED — the running app queue manager
 gw_sec_exporter_conn: ""       # REQUIRED — ConnectionName, e.g. "10.50.0.11(1414)"
-gw_sec_exporter_channel: APP.SVRCONN
+gw_sec_exporter_channel: MON.SVRCONN   # Stage-2 SSLPEERMAP maps this to the read-only mqmon identity (epic #235)
 gw_sec_exporter_port: 9110     # distinct from v1's 9109
 gw_sec_horizon_days: 3
 
@@ -26,12 +26,15 @@ gw_src_dir: /opt/gwlab-src
 gw_src_local: "{{ playbook_dir }}/../src/gwlab"
 gw_mq_installation: /opt/mqm
 
-# Mutual TLS to the app SVRCONN (the estate mandates TLS 1.3).
+# Mutual TLS to the MON SVRCONN (the estate mandates TLS 1.3). The exporter now
+# connects as the mqmon observer identity (via MON.SVRCONN) using the mq_prometheus
+# (O=app-org, OU=ops) keystore — which Stage-2 SSLPEERMAP maps to the read-only
+# mqmon account — NOT the mqapp business identity (epic #235).
 gw_tls_cipher: ANY_TLS13_OR_HIGHER
-gw_key_repo: /var/mqm/ssl/app-client/key
-gw_cert_label: app-client
-gw_app_client_p12: ""          # REQUIRED — path to app-client.p12 on the controller
-gw_app_client_pw: ""           # REQUIRED — the keystore password
+gw_key_repo: /var/mqm/ssl/mq_prometheus/key
+gw_cert_label: mq_prometheus
+gw_sec_exporter_mon_p12: ""    # REQUIRED — path to the mq_prometheus (OU=ops) keystore on the controller
+gw_sec_exporter_mon_pw: ""     # REQUIRED — the monitoring keystore password
 
 # The lab's obs node (Prometheus + Grafana).
 gw_prometheus_targets_dir: /etc/prometheus/targets

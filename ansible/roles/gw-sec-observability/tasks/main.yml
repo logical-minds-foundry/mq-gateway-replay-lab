@@ -7,12 +7,13 @@
     that:
       - gw_sec_exporter_qmgr | length > 0
       - gw_sec_exporter_conn | length > 0
-      - gw_app_client_p12 | length > 0
-      - gw_app_client_pw | length > 0
+      - gw_sec_exporter_mon_p12 | length > 0
+      - gw_sec_exporter_mon_pw | length > 0
     fail_msg: >-
-      Set gw_sec_exporter_qmgr, gw_sec_exporter_conn, and the app-client keystore
-      (gw_app_client_p12 + gw_app_client_pw) at apply time. No misleading defaults
-      for the live topology or secrets — a mis-targeted apply must fail loudly.
+      Set gw_sec_exporter_qmgr, gw_sec_exporter_conn, and the mq_prometheus (OU=ops)
+      monitoring keystore (gw_sec_exporter_mon_p12 + gw_sec_exporter_mon_pw) at apply
+      time. No misleading defaults for the live topology or secrets — a mis-targeted
+      apply must fail loudly.
 
 # --- provision the exporter runtime on the exporter host ----------------------
 - name: Create the gwlab virtualenv with pymqi (compiled against the MQ client)
@@ -34,8 +35,8 @@
   become: true
   delegate_to: "{{ gw_sec_exporter_host }}"
 
-# --- the gateway's own client keystore on the exporter host -------------------
-- name: Create the app-client keystore directory
+# --- the gateway's own mq_prometheus (OU=ops) monitoring keystore on the host --
+- name: Create the mq_prometheus keystore directory
   ansible.builtin.file:
     path: "{{ gw_key_repo | dirname }}"
     state: directory
@@ -45,9 +46,9 @@
   become: true
   delegate_to: "{{ gw_sec_exporter_host }}"
 
-- name: Distribute the app-client keystore (the gateway's own client cert)
+- name: Distribute the mq_prometheus keystore (the exporter's mqmon observer cert)
   ansible.builtin.copy:
-    src: "{{ gw_app_client_p12 }}"
+    src: "{{ gw_sec_exporter_mon_p12 }}"
     dest: "{{ gw_key_repo }}.p12"
     owner: mqm
     group: mqm
@@ -58,7 +59,7 @@
 - name: Stash the keystore password for GSKit (.sth beside the .p12)
   ansible.builtin.command: >-
     {{ gw_mq_installation }}/bin/runmqakm -keydb -stashpw -type pkcs12
-    -db {{ gw_key_repo }}.p12 -pw {{ gw_app_client_pw }}
+    -db {{ gw_key_repo }}.p12 -pw {{ gw_sec_exporter_mon_pw }}
   args:
     creates: "{{ gw_key_repo }}.sth"
   become: true
