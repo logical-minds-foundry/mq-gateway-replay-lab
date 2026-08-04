@@ -95,6 +95,15 @@ once Stage 2 is applied. §6.0 makes establishing Stage 2 a hard prerequisite; t
 validation (§7) asserts it before trusting any grant, and a residual `mqm`
 identity is a **loud stop**, never a silent widening.
 
+**Cert-DN alignment — verified this session (no lockout risk).** Enabling
+`CHLAUTH` only maps our connections correctly if our certs carry the OUs the
+`SSLPEERMAP` keys off. Measured directly: `app-client` = `O=app-org, OU=apps` →
+`mqapp`; `mq_prometheus` = `O=app-org, OU=ops` → `mqmon`; `svc-responder` =
+`O=svc-org, OU=messaging` → `mqsvc`. All three match the base lab's maps, so no
+identity hits the deny-all backstop when Stage 2 is applied. The observers must
+present the `mq_prometheus`/OU=ops keystore (the sole such cert on the box);
+there is **no distinct `mon-client` cert** — that name was only a placeholder.
+
 ## 4. The topology the model must fit
 
 ```
@@ -179,8 +188,11 @@ base lab's playbook), declare-and-verified, reproducible on rebuild. **Nothing
 bolt-on-specific is added to the base lab.**
 
 1. **Observer-identity separation (`gw-sec-observability`)** — switch the exporter
-   from `APP.SVRCONN`/`app-client` (→ `mqapp`) to `MON.SVRCONN`/`mon-client` (→
-   `mqmon`), so every audit-queue reader is the read-only `mqmon` identity.
+   from `APP.SVRCONN` + the `app-client` cert (`OU=apps` → `mqapp`) to
+   `MON.SVRCONN` + the `mq_prometheus` cert (`OU=ops` → `mqmon`), so every
+   audit-queue reader is the read-only `mqmon` identity. (Cert DNs verified this
+   session — see §3; `mq_prometheus`/OU=ops is the base lab's monitoring identity
+   and the only such keystore on the box; "mon-client" was a naming placeholder.)
 2. **Wire the collector into `site.yml` (`gw-sec-collector`)** — so the committed
    deploy matches what runs live (hot-deployed during epic #175).
 3. **`gw-sec-queues`** — declare-and-verify Stage 2 is present, then `setmqaut -g`

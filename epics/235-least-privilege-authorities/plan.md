@@ -37,6 +37,12 @@ GSKit, the base lab's `mq-authz-accounts` role + `authz.mqsc.j2` + `authz.yml`.
   only `mqmon +browse +inq +dsp`. `+setall` is confined to `mqsvc` on
   `GW.SEC.REPLY`.
 - **Anonymization (absolute).** Generic identity/queue/host names only.
+- **Cert-DN alignment (verified this session — no lockout risk).** The existing
+  certs already carry the OUs the Stage-2 `SSLPEERMAP` keys off: `app-client` =
+  `O=app-org,OU=apps` → `mqapp`; `mq_prometheus` = `O=app-org,OU=ops` → `mqmon`;
+  `svc-responder` = `O=svc-org` → `mqsvc`. Enabling `CHLAUTH` maps them cleanly;
+  none hit the deny-all backstop. Observers must present the `mq_prometheus`/OU=ops
+  keystore (the only such cert on the box); "mon-client" was a naming placeholder.
 - **Validation command (the only one):** `vrg-container-run -- vrg-validate`.
 
 ---
@@ -44,7 +50,8 @@ GSKit, the base lab's `mq-authz-accounts` role + `authz.mqsc.j2` + `authz.yml`.
 ## File Structure
 
 - `ansible/roles/gw-sec-observability/defaults/main.yml` + `tasks/main.yml` —
-  retarget exporter identity to `MON.SVRCONN`/`mon-client` (→ `mqmon`) (Task 1).
+  retarget exporter identity to `MON.SVRCONN` + the `mq_prometheus`/OU=ops
+  keystore (→ `mqmon`) (Task 1).
 - `ansible/site.yml` — add the `gw-sec-collector` play (Task 2).
 - `ansible/roles/gw-sec-queues/defaults/main.yml` + `tasks/main.yml` — the grant
   map + declare-and-verify Stage 2 + `setmqaut -g` loop (Task 3).
@@ -61,7 +68,7 @@ blocked-by the deployment.
 
 ---
 
-## Task 1: Observer identity — exporter → `MON.SVRCONN`/`mon-client` (→ `mqmon`)
+## Task 1: Observer identity — exporter → `MON.SVRCONN` (`mq_prometheus`/OU=ops → `mqmon`)
 
 **Files:** Modify `ansible/roles/gw-sec-observability/defaults/main.yml` +
 `tasks/main.yml`.
@@ -71,31 +78,41 @@ Stage 2 maps to `mqmon`, the read-only identity Task 3 grants `+browse` on the
 audit ledgers. After this, no audit-queue reader connects as `mqapp`.
 
 - [ ] **Step 1: Read the keystore-handling blocks** in
-  `gw-sec-observability/tasks/main.yml` and the `mon-client` equivalents in
+  `gw-sec-observability/tasks/main.yml` and the monitoring-keystore equivalents in
   `gw-sec-collector/tasks/deploy.yml`.
 
 - [ ] **Step 2: Retarget the identity defaults** in
   `ansible/roles/gw-sec-observability/defaults/main.yml`:
 
 ```yaml
-gw_sec_exporter_channel: MON.SVRCONN          # was APP.SVRCONN (Stage 2 maps this to mqmon)
-gw_key_repo: /var/mqm/ssl/mon-client/key      # was /var/mqm/ssl/app-client/key
-gw_cert_label: mon-client                     # was app-client
+gw_sec_exporter_channel: MON.SVRCONN            # was APP.SVRCONN (Stage 2 SSLPEERMAP maps this to mqmon)
+gw_key_repo: /var/mqm/ssl/mq_prometheus/key     # the OU=ops monitoring cert; was /var/mqm/ssl/app-client/key
+gw_cert_label: mq_prometheus                    # the mqmon identity's cert (verified DN O=app-org,OU=ops); was app-client
 ```
 
-Add the monitoring-keystore apply-time vars (mirroring
-`gw_collector_mon_client_p12`/`_pw`):
+**Identity note (cert-DN verified, this session).** The observers' cert must
+present **`O=app-org, OU=ops`** — the base lab's `MON.SVRCONN` `SSLPEERMAP` maps
+that DN to `mqmon`. The one such cert on the box is **`mq_prometheus`** (subject
+`O=app-org, OU=ops, CN=mq_prometheus`); there is **no separate `mon-client`
+cert** — it was only ever a naming placeholder. Point the exporter (and the
+collector) at the `mq_prometheus`/OU=ops keystore. (Confirmed aligned:
+`app-client` = `OU=apps` → `mqapp`; `mq_prometheus` = `OU=ops` → `mqmon`.)
+
+Add the monitoring-keystore apply-time vars (mirroring the collector's; the
+keystore supplied is the base lab's `mq_prometheus` / OU=ops keystore):
 
 ```yaml
 # The exporter now connects as the mqmon observer identity (via MON.SVRCONN),
-# NOT the mqapp business identity (epic #235). REQUIRED at apply time.
-gw_sec_exporter_mon_client_p12: ""   # REQUIRED — path to mon-client.p12 on the controller
-gw_sec_exporter_mon_client_pw: ""    # REQUIRED — the monitoring keystore password
+# NOT the mqapp business identity (epic #235). The supplied keystore is the base
+# lab's mq_prometheus (O=app-org,OU=ops) cert — the identity the SSLPEERMAP maps
+# to mqmon. REQUIRED at apply time.
+gw_sec_exporter_mon_p12: ""   # REQUIRED — path to the mq_prometheus (OU=ops) keystore on the controller
+gw_sec_exporter_mon_pw: ""    # REQUIRED — the monitoring keystore password
 ```
 
-- [ ] **Step 3: Point the keystore tasks at the mon-client vars** in
+- [ ] **Step 3: Point the keystore tasks at the mq_prometheus vars** in
   `tasks/main.yml` (assert preconditions + distribute + `runmqakm` stash consume
-  `gw_sec_exporter_mon_client_p12`/`_pw`; rename comments app-client → mon-client).
+  `gw_sec_exporter_mon_p12`/`_pw`; rename comments app-client → mq_prometheus/OU=ops).
 
 - [ ] **Step 4: Grep for lingering app-client references**
 
@@ -111,7 +128,7 @@ Expected: no matches.
 ```bash
 vrg-commit --type feat --scope gw-sec-observability \
   --message "connect the settlement exporter as the mqmon observer identity" \
-  --body "Epic #235: the exporter uses MON.SVRCONN + the mon-client keystore (Stage 2 maps it to the read-only mqmon account), not APP.SVRCONN/app-client — so no audit-queue reader connects as the mqapp business identity."
+  --body "Epic #235: the exporter uses MON.SVRCONN + the mq_prometheus (O=app-org,OU=ops) keystore, which the Stage-2 SSLPEERMAP maps to the read-only mqmon account — not APP.SVRCONN/app-client (OU=apps → mqapp) — so no audit-queue reader connects as the business identity."
 ```
 
 ---
@@ -381,8 +398,9 @@ PR-workable; run with `issue-deploy`. Closes on `Outcome: SUCCESS`.
   `mq-authz-accounts` + `authz.mqsc.j2` CHLAUTH maps + its base `setmqaut -g`).
   Owned/automated from this repo (invoke the base lab playbook), declare-and-verified.
   Nothing bolt-on-specific is added to the base lab.
-- **Precondition self-check:** Tasks 1–4 merged; the `mon-client` keystore + Stage-2
-  apply inputs available. If unmet, comment "blocked: preconditions not met" and stop.
+- **Precondition self-check:** Tasks 1–4 merged; the `mq_prometheus` (OU=ops)
+  keystore + Stage-2 apply inputs available. If unmet, comment "blocked:
+  preconditions not met" and stop.
 - **Procedure:** (1) apply base lab Stage 2 to `NHAUAPP`; verify `mqapp`/`mqmon`/
   `mqsvc` exist and `CHLAUTH(ENABLED)`. (2) apply our settlement plays from
   `site.yml` (`gw-sec-queues`, `gw-sec-svc-queues`, `gw-sec-observability`,
@@ -440,5 +458,5 @@ says so). Everything else is concrete.
 
 **Type/name consistency:** `gw_sec_observer_group` (mqmon), `gw_sec_app_group`
 (mqapp), `gw_sec_mca_group` (mqsvc), `gw_sec_responder_group`, `gw_sec_grants`,
-`gw_sec_reply_grant`, `gw_sec_svc_grants`, `gw_sec_exporter_mon_client_p12/_pw` are
+`gw_sec_reply_grant`, `gw_sec_svc_grants`, `gw_sec_exporter_mon_p12/_pw` are
 used identically across defaults, tasks, and the operational tasks.
