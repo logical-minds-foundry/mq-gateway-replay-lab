@@ -2,185 +2,138 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Enforce and prove the full least-privilege MQ authority model for the
-settlement gateway — every observer on a dedicated read-only identity, the
-business identity strictly put/get — via `SET AUTHREC` on the `GW.SEC.*` objects
-this repo owns, validated live including the 2035 denial paths.
+> **Revision (task #247).** Re-based to **mirror and reuse the base lab's defined
+> authorization model** (service accounts `mqapp`/`mqmon`/`mqsvc`, `CHLAUTH
+> SSLPEERMAP` identity maps, `setmqaut -g` group grants) instead of inventing
+> principals and `SET AUTHREC`. The running `NHAUAPP` box is pre-hardening, so
+> establishing the base lab's Stage 2 on it is an owned prerequisite (§6.0).
 
-**Architecture:** This is **infrastructure + operational** work, not application
-code. Four role/playbook changes (Ansible), one docs change, then two operational
-tasks (deploy the roles to the live lab, then validate positive paths + negative
-denials). No Python logic changes — the observability code already opens the
-audit queues `MQOO_BROWSE`; what changes is *which identity* connects and *what
-that identity is authorised to do*. Verification for the role edits is
-`vrg-validate` (lint) + `ansible-playbook --syntax-check` + the roles' own
-declare-and-verify assertions; the live proof lives in the deploy + validation
-tasks.
+**Goal:** Make browse-only an enforced queue-manager boundary for the settlement
+audit history by adopting the base lab's least-privilege identities and layering
+our own `setmqaut -g` grants on the `GW.SEC.*` queues, proven live with a
+2035-denial negative test.
 
-**Tech Stack:** Ansible (roles + `site.yml`), `runmqsc` (`SET AUTHREC`,
-`DISPLAY AUTHREC`, `DISPLAY CHSTATUS`), IBM MQ OAM, GSKit (`runmqakm`),
-Markdown docs.
+**Architecture:** Infrastructure + operational. The base lab **already defines**
+the identity model; we (0) apply its Stage 2 to the pre-hardening `NHAUAPP` box
+via the base lab's own generic playbook, then (1–5) point our observer at the
+`mqmon` identity, wire the collector into the committed deploy, add `setmqaut -g`
+grants for the base lab's groups on our queues, and document it — then prove it
+live. No Python logic changes; the readers already open `MQOO_BROWSE`.
+
+**Tech Stack:** Ansible (roles + `site.yml`), `setmqaut -g`, `runmqsc`
+(`DISPLAY CHLAUTH`/`CHSTATUS`/`AUTHREC`), IBM MQ OAM + `CHLAUTH SSLPEERMAP`,
+GSKit, the base lab's `mq-authz-accounts` role + `authz.mqsc.j2` + `authz.yml`.
 
 ## Global Constraints
 
-- **Self-owning bolt-on rule.** Automate and own 100% of every change; it must
-  replay cleanly on a from-scratch rebuild. Never `DEFINE CHANNEL` or alter any
-  `CHLAUTH`/`MCAUSER` — those are the base lab's. We `SET AUTHREC` only on
-  `GW.SEC.*` objects we own, and point our own observability role at the existing
-  `MON.SVRCONN`/`mon-client` identity.
-- **Anonymization (absolute).** Invented identity/queue/host names only; no
-  employer/client/vendor content.
-- **No silent failures.** A missing/unexpected effective identity, a privileged
-  effective identity, or a positive-path regression is a **loud stop** — never a
-  silent widening of a grant to "make it work".
-- **MQ-native & minimalist.** `SET AUTHREC` piped to `runmqsc` in the roles'
-  existing style; no new tooling, no AMS.
+- **Self-owning bolt-on rule (corrected).** Own and automate every change,
+  including applying the base lab's Stage 2 to `NHAUAPP`. Keep base-lab changes
+  **generic** — never encode `GW.SEC.*` into the base lab. Declare-and-verify
+  before relying; a residual `mqm` identity is a loud stop.
+- **Reuse the base lab's model.** Identities `mqapp` (app), `mqmon` (monitoring,
+  read-only), `mqsvc` (return MCA). Grants via **`setmqaut -g` to groups**, never
+  principals, never `SET AUTHREC`. Names ≤ 12 chars.
+- **Audit ledgers are QM-written (STREAMQ).** No client `+put`/`+setall` on them;
+  only `mqmon +browse +inq +dsp`. `+setall` is confined to `mqsvc` on
+  `GW.SEC.REPLY`.
+- **Anonymization (absolute).** Generic identity/queue/host names only.
 - **Validation command (the only one):** `vrg-container-run -- vrg-validate`.
-- **Effective principals are apply-time role variables**, declared *and*
-  verified against the live channel identity (see Task 3) — this resolves spec
-  Open Q1: we **declare** the principal and **verify** it matches
-  `DISPLAY CHSTATUS … MCAUSER`, rather than parse `CHLAUTH SSLPEERMAP` at apply
-  time.
 
 ---
 
 ## File Structure
 
-- `ansible/roles/gw-sec-observability/defaults/main.yml` — retarget exporter
-  identity to `MON.SVRCONN`/`mon-client` (Task 1).
-- `ansible/roles/gw-sec-observability/tasks/main.yml` — deploy the `mon-client`
-  keystore instead of `app-client` (Task 1).
+- `ansible/roles/gw-sec-observability/defaults/main.yml` + `tasks/main.yml` —
+  retarget exporter identity to `MON.SVRCONN`/`mon-client` (→ `mqmon`) (Task 1).
 - `ansible/site.yml` — add the `gw-sec-collector` play (Task 2).
-- `ansible/roles/gw-sec-queues/defaults/main.yml` — new principal variables +
-  the authority grant map (Task 3).
-- `ansible/roles/gw-sec-queues/tasks/main.yml` — append declare-and-verify
-  identity + `SET AUTHREC` + `DISPLAY AUTHREC` assertion tasks (Task 3).
-- `ansible/roles/gw-sec-svc-queues/defaults/main.yml` +
-  `ansible/roles/gw-sec-svc-queues/tasks/main.yml` — responder-side grants
-  (Task 4).
-- `docs/mq-native-settlement-tracking.md` — "Security & permissions" section;
-  `ansible/README.md` — pointer (Task 5).
+- `ansible/roles/gw-sec-queues/defaults/main.yml` + `tasks/main.yml` — the grant
+  map + declare-and-verify Stage 2 + `setmqaut -g` loop (Task 3).
+- `ansible/roles/gw-sec-svc-queues/defaults/main.yml` + `tasks/main.yml` —
+  `mqsvc`/responder grants (Task 4).
+- `docs/mq-native-settlement-tracking.md` + `ansible/README.md` — docs (Task 5).
+- **Base lab (declare-and-verify + apply, not modify):**
+  `mq-resiliency-lab-for-linux/ansible/site-nativeha-ubuntu.yml` (authz),
+  `roles/mq-authz-accounts/`, `templates/authz.mqsc.j2`, `group_vars/all/authz.yml`.
 
-Each of Tasks 1–5 is a separate GitHub issue closed by its own PR. Tasks 1–4
-land Ansible; Task 5 is docs. The **deployment** task (apply) is blocked-by
-1–4; the **validation** task (prove) is blocked-by the deployment.
+Tasks 1–5 are separate GitHub issues, each closed by its own PR. The **deployment**
+task (§6.0 apply + our roles) is blocked-by 1–4; the **validation** task is
+blocked-by the deployment.
 
 ---
 
-## Task 1: Separate the observer identity — exporter → `MON.SVRCONN`/`mon-client`
+## Task 1: Observer identity — exporter → `MON.SVRCONN`/`mon-client` (→ `mqmon`)
 
-**Files:**
-- Modify: `ansible/roles/gw-sec-observability/defaults/main.yml`
-- Modify: `ansible/roles/gw-sec-observability/tasks/main.yml`
+**Files:** Modify `ansible/roles/gw-sec-observability/defaults/main.yml` +
+`tasks/main.yml`.
 
-**Interfaces:**
-- Consumes: nothing from other tasks.
-- Produces: an exporter that connects as the `MON.SVRCONN` observer identity —
-  the same identity Task 3 will grant `+browse +inq +dsp` on the audit ledgers.
-  After this task, **no observer connects as `APP.SVRCONN`.**
+**Interfaces:** Produces an exporter that connects over `MON.SVRCONN` — which
+Stage 2 maps to `mqmon`, the read-only identity Task 3 grants `+browse` on the
+audit ledgers. After this, no audit-queue reader connects as `mqapp`.
 
-**Context:** Today the exporter connects `--channel APP.SVRCONN` with the
-`app-client` cert (`gw_key_repo: /var/mqm/ssl/app-client/key`,
-`gw_cert_label: app-client`) and deploys the keystore from
-`gw_app_client_p12`/`gw_app_client_pw`. The collector role already proves the
-`mon-client` pattern (`gw-sec-collector/tasks/deploy.yml`): distribute the
-`.p12`, then `runmqakm -keydb -stashpw` a `.sth` beside it. This task retargets
-the exporter to that identity.
+- [ ] **Step 1: Read the keystore-handling blocks** in
+  `gw-sec-observability/tasks/main.yml` and the `mon-client` equivalents in
+  `gw-sec-collector/tasks/deploy.yml`.
 
-- [ ] **Step 1: Read the two existing keystore-handling task blocks**
-
-Read `ansible/roles/gw-sec-observability/tasks/main.yml` (the "Distribute the
-app-client keystore" + "Stash the keystore password" tasks) and
-`ansible/roles/gw-sec-collector/tasks/deploy.yml` (the `mon-client` equivalents)
-so the retarget mirrors the established mechanism exactly.
-
-- [ ] **Step 2: Retarget the identity defaults**
-
-In `ansible/roles/gw-sec-observability/defaults/main.yml` change:
+- [ ] **Step 2: Retarget the identity defaults** in
+  `ansible/roles/gw-sec-observability/defaults/main.yml`:
 
 ```yaml
-gw_sec_exporter_channel: MON.SVRCONN          # was APP.SVRCONN
+gw_sec_exporter_channel: MON.SVRCONN          # was APP.SVRCONN (Stage 2 maps this to mqmon)
 gw_key_repo: /var/mqm/ssl/mon-client/key      # was /var/mqm/ssl/app-client/key
 gw_cert_label: mon-client                     # was app-client
 ```
 
-Add the monitoring-keystore apply-time variables (replacing the app-client ones
-this role consumes), mirroring `gw_collector_mon_client_p12`/`_pw`:
+Add the monitoring-keystore apply-time vars (mirroring
+`gw_collector_mon_client_p12`/`_pw`):
 
 ```yaml
-# The dedicated monitoring keystore (mon-client) — the exporter now connects as
-# the MON.SVRCONN observer identity, NOT the business app-client identity
-# (epic #235: separate every observer onto a read-only identity). REQUIRED at
-# apply time; no misleading default for a secret.
+# The exporter now connects as the mqmon observer identity (via MON.SVRCONN),
+# NOT the mqapp business identity (epic #235). REQUIRED at apply time.
 gw_sec_exporter_mon_client_p12: ""   # REQUIRED — path to mon-client.p12 on the controller
 gw_sec_exporter_mon_client_pw: ""    # REQUIRED — the monitoring keystore password
 ```
 
-- [ ] **Step 3: Point the keystore tasks at the mon-client variables**
+- [ ] **Step 3: Point the keystore tasks at the mon-client vars** in
+  `tasks/main.yml` (assert preconditions + distribute + `runmqakm` stash consume
+  `gw_sec_exporter_mon_client_p12`/`_pw`; rename comments app-client → mon-client).
 
-In `ansible/roles/gw-sec-observability/tasks/main.yml`, update the assert
-preconditions and the distribute/stash tasks to consume
-`gw_sec_exporter_mon_client_p12`/`_pw` instead of `gw_app_client_p12`/`_pw`, and
-update the task names/comments from "app-client" to "mon-client (the observer's
-monitoring cert)". The `dest`/`key_repo`/`runmqakm` lines already interpolate
-`gw_key_repo`, so they follow the default change automatically. Keep the
-declare-and-verify shape (loud assert if the secret vars are unset).
-
-- [ ] **Step 4: Grep for any lingering app-client reference in this role**
+- [ ] **Step 4: Grep for lingering app-client references**
 
 ```bash
 grep -rnE 'app.client|APP\.SVRCONN|app_client' ansible/roles/gw-sec-observability/
 ```
-Expected: **no matches** after the edits. Any match is a missed retarget — fix it.
+Expected: no matches.
 
-- [ ] **Step 5: Validate**
-
-```bash
-vrg-container-run -- vrg-validate
-```
-Expected: PASS (yamllint + ansible-lint clean).
+- [ ] **Step 5: Validate** — `vrg-container-run -- vrg-validate` → PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 vrg-commit --type feat --scope gw-sec-observability \
-  --message "connect the settlement exporter as the MON.SVRCONN observer identity" \
-  --body "Separate the observer role from the business role (epic #235): the exporter now uses MON.SVRCONN + the mon-client keystore, not APP.SVRCONN/app-client, so no observer connects as the business identity."
+  --message "connect the settlement exporter as the mqmon observer identity" \
+  --body "Epic #235: the exporter uses MON.SVRCONN + the mon-client keystore (Stage 2 maps it to the read-only mqmon account), not APP.SVRCONN/app-client — so no audit-queue reader connects as the mqapp business identity."
 ```
 
 ---
 
 ## Task 2: Wire `gw-sec-collector` into `site.yml`
 
-**Files:**
-- Modify: `ansible/site.yml`
+**Files:** Modify `ansible/site.yml`.
 
-**Interfaces:**
-- Consumes: nothing.
-- Produces: a committed deploy that includes the streaming collector, so "replays
-  cleanly on a from-scratch rebuild" holds for the observer the model centres on.
+**Interfaces:** A committed deploy that includes the streaming collector, so a
+from-scratch rebuild reproduces the `mqmon` observer.
 
-**Context:** `gw-sec-collector` exists as a role (build/install/deploy) but is
-absent from `site.yml` — it was hot-deployed live during epic #175. The two
-existing obs plays target `hosts: gateway_obs` and delegate the service to a
-`*_host` var. Mirror that shape.
+- [ ] **Step 1: Read the two `hosts: gateway_obs` plays** at the tail of
+  `ansible/site.yml`.
 
-- [ ] **Step 1: Read the existing obs plays**
-
-Read the two `hosts: gateway_obs` plays at the tail of `ansible/site.yml`
-(`gw-observability`, `gw-sec-observability`) to copy their structure, comment
-style, and `gather_facts: false`.
-
-- [ ] **Step 2: Add the collector play**
-
-Append after the `gw-sec-observability` play:
+- [ ] **Step 2: Append the collector play**
 
 ```yaml
 # Deploy the streaming settlement collector: the box-only stateful reader that
-# browses both GW.SEC.* audit queues as the MON.SVRCONN observer identity and
-# publishes derived settlement metrics to Prometheus (epic #65). Wired here so
-# the committed deploy matches what runs live (epic #235). Owns only /opt/gwlab
-# + its own unit + its own monitoring keystore (self-owning bolt-on rule).
+# browses both GW.SEC.* audit queues as the mqmon observer identity (MON.SVRCONN)
+# and publishes derived metrics to Prometheus (epic #65). Wired here so the
+# committed deploy matches live (epic #235). Owns only /opt/gwlab + its own unit
+# + its own monitoring keystore.
 - name: Deploy the gateway SWIFT settlement collector (streaming, box-only)
   hosts: gateway_obs
   gather_facts: false
@@ -188,496 +141,304 @@ Append after the `gw-sec-observability` play:
     - gw-sec-collector
 ```
 
-- [ ] **Step 3: Syntax-check the playbook**
+- [ ] **Step 3: Syntax-check** —
+  `vrg-container-run -- ansible-playbook ansible/site.yml -i ansible/inventory/lab.yml --syntax-check` → PASS.
 
-```bash
-vrg-container-run -- ansible-playbook ansible/site.yml --syntax-check
-```
-Expected: PASS (`playbook: ansible/site.yml`). If `--syntax-check` needs an
-inventory, use `-i ansible/inventory/lab.yml`.
+- [ ] **Step 4: Confirm enumerated** —
+  `... --list-tasks 2>&1 | grep -i collector` shows the role's tasks.
 
-- [ ] **Step 4: Confirm the play is enumerated**
-
-```bash
-vrg-container-run -- ansible-playbook ansible/site.yml -i ansible/inventory/lab.yml --list-tasks 2>&1 | grep -i collector
-```
-Expected: the collector role's tasks appear in the play list.
-
-- [ ] **Step 5: Validate**
-
-```bash
-vrg-container-run -- vrg-validate
-```
-Expected: PASS.
+- [ ] **Step 5: Validate** — `vrg-container-run -- vrg-validate` → PASS.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 vrg-commit --type feat --scope ansible \
   --message "wire gw-sec-collector into site.yml so the committed deploy matches live" \
-  --body "The streaming collector was hot-deployed during epic #175 and never added to site.yml (epic #235). Add its play on gateway_obs so a from-scratch rebuild reproduces the browse-only observer the least-privilege model centres on."
+  --body "Epic #235: add the collector play on gateway_obs so a from-scratch rebuild reproduces the mqmon browse-only observer (hot-deployed during epic #175)."
 ```
 
 ---
 
-## Task 3: `gw-sec-queues` — declare-and-verify identities + `SET AUTHREC` grants
+## Task 3: `gw-sec-queues` — declare-and-verify Stage 2 + `setmqaut -g` grants
 
-**Files:**
-- Modify: `ansible/roles/gw-sec-queues/defaults/main.yml`
-- Modify: `ansible/roles/gw-sec-queues/tasks/main.yml`
+**Files:** Modify `ansible/roles/gw-sec-queues/defaults/main.yml` + `tasks/main.yml`.
 
-**Interfaces:**
-- Consumes: the `MON.SVRCONN` observer identity (Task 1 makes the exporter use
-  it; the collector already does).
-- Produces: the enforced authority grants the validation task proves. Names the
-  effective principals as role variables: `gw_sec_observer_principal`,
-  `gw_sec_app_principal`, `gw_sec_mca_principal`.
+**Interfaces:** Consumes the base lab's Stage-2 groups (`mqmon`, `mqapp`). Produces
+the enforced grants on our audit + instruction + reply queues.
 
-**Context:** The role currently ends with the declare-and-verify of the lab's
-XMITQ + channel. Append the authority model after the existing `DEFINE`/`ALTER`
-blocks, in the same `become_user: mqm` + pipe-to-`runmqsc` idiom. Authority is
-checked for a `QALIAS` opened for output against the **alias** name; grant `+put`
-on the alias, and also on its resolved base, so the app path is robust
-regardless of the OAM alias-resolution mode (spec Open Q3).
+**Context:** Append after the role's existing `DEFINE`/`ALTER`/declare-verify
+tasks, in the `become_user: mqm` idiom. Use `setmqaut -g` (the base lab's
+mechanism), not `SET AUTHREC`. Stage 2 (accounts + CHLAUTH) is a §6.0 prerequisite
+established by the deployment task; this role **declare-and-verifies** it before
+granting.
 
-- [ ] **Step 1: Read the current tail of the role and its defaults**
+- [ ] **Step 1: Read** the role's current tail and `defaults/main.yml` (`q_*` names);
+  read the base lab's `group_vars/all/authz.yml` grant shape to mirror it.
 
-Read `ansible/roles/gw-sec-queues/tasks/main.yml` (the declare-and-verify
-tasks) and `defaults/main.yml` (the `q_*` names) so the new tasks reuse the exact
-variable names (`q_instruct`, `q_instruct_audit`, `q_reply`, `q_status_audit`).
+- [ ] **Step 2: Add the grant map to defaults** (`ansible/roles/gw-sec-queues/defaults/main.yml`):
 
-- [ ] **Step 2: Add principal + grant variables to defaults**
+```yaml
+# --- least-privilege authority model (epic #235) — mirrors the base lab -------
+# Reuses the base lab's Stage-2 groups (mqapp/mqmon); grants via setmqaut -g on
+# the queues this repo owns. Audit ledgers are QM-written (STREAMQ) so they take
+# NO client +put/+setall — only mqmon +browse. Shape mirrors base lab authz.yml.
+gw_sec_observer_group: mqmon    # MON.SVRCONN observers (collector + exporter)
+gw_sec_app_group: mqapp         # APP.SVRCONN application
 
-In `ansible/roles/gw-sec-queues/defaults/main.yml` add:
+gw_sec_grants:
+  - { group: "{{ gw_sec_observer_group }}", object: "{{ q_instruct_audit }}", authorities: "+browse +inq +dsp" }
+  - { group: "{{ gw_sec_observer_group }}", object: "{{ q_status_audit }}",   authorities: "+browse +inq +dsp" }
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct }}",       authorities: "+put" }
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct_audit }}", authorities: "+put" }
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_reply }}",          authorities: "+get +inq +browse" }
+```
+
+- [ ] **Step 3: Declare-and-verify Stage 2 is present** (append to `tasks/main.yml`):
 
 ```yaml
 # --- least-privilege authority model (epic #235) ------------------------------
-# The EFFECTIVE principals the lab's channels resolve incoming connections to.
-# Declared here and VERIFIED against DISPLAY CHSTATUS at apply time (a mismatch
-# is a loud failure). We authrec our own GW.SEC.* objects for these principals;
-# we never touch the channels or their CHLAUTH/MCAUSER (self-owning bolt-on rule).
-gw_sec_observer_principal: ""   # REQUIRED — effective user for MON.SVRCONN (the observers)
-gw_sec_app_principal: ""        # REQUIRED — effective user for APP.SVRCONN (the application)
-gw_sec_mca_principal: ""        # REQUIRED — effective user for the inbound return-channel MCA
-
-# The grant map. Each entry: profile (queue), objtype, principal, authadd list.
-# Least privilege: observers browse the audit ledgers only; the app puts on the
-# instruction path and gets on the reply; the inbound MCA puts replies.
-gw_sec_authrecs:
-  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_observer_principal }}", auth: "BROWSE INQ DSP" }
-  - { profile: "{{ q_status_audit }}",   principal: "{{ gw_sec_observer_principal }}", auth: "BROWSE INQ DSP" }
-  - { profile: "{{ q_instruct }}",       principal: "{{ gw_sec_app_principal }}",      auth: "PUT" }
-  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_app_principal }}",      auth: "PUT" }
-  - { profile: "{{ q_reply }}",          principal: "{{ gw_sec_app_principal }}",      auth: "GET INQ" }
-  - { profile: "{{ q_reply }}",          principal: "{{ gw_sec_mca_principal }}",      auth: "PUT SETALL" }
-
-# Forbidden authorities to STRIP so the model holds regardless of any pre-existing
-# grant (spec §5 "no wider grant" invariant). AUTHRMV is idempotent — removing an
-# absent authority is a harmless no-op — so this drives each principal to the
-# desired state deterministically on our own objects. Grants that survive this
-# (e.g. a GROUP or +all authrec conferring a forbidden authority) are caught by
-# the enumeration in Step 5 and either stripped (if on our object) or reported as
-# a declare-and-verify finding (if lab-owned) — never silently left in place.
-gw_sec_authrmv:
-  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_app_principal }}",      auth: "BROWSE GET" }
-  - { profile: "{{ q_instruct_audit }}", principal: "{{ gw_sec_observer_principal }}", auth: "GET PUT SET CLR DLT" }
-  - { profile: "{{ q_status_audit }}",   principal: "{{ gw_sec_observer_principal }}", auth: "GET PUT SET CLR DLT" }
-```
-
-- [ ] **Step 3: Add the "assert the principals were provided" guard**
-
-Append to `ansible/roles/gw-sec-queues/tasks/main.yml`, after the existing
-channel declare-and-verify:
-
-```yaml
-# --- least-privilege authority model (epic #235) ------------------------------
-- name: Assert the effective principals were provided (no silent default identity)
-  ansible.builtin.assert:
-    that:
-      - gw_sec_observer_principal | length > 0
-      - gw_sec_app_principal | length > 0
-      - gw_sec_mca_principal | length > 0
-    fail_msg: >-
-      Set gw_sec_observer_principal / gw_sec_app_principal / gw_sec_mca_principal
-      to the effective users the MON.SVRCONN / APP.SVRCONN / inbound return
-      channel resolve to. These are DECLARED here and VERIFIED against the live
-      channel identity below; a missing value fails loudly rather than authrec a
-      wrong principal.
-```
-
-- [ ] **Step 4: Add the declare-and-verify of the live MON.SVRCONN identity**
-
-Append (this asserts our declared observer principal matches what the live
-channel actually resolves to — resolving spec Open Q1, and catching a privileged
-identity the precondition forbids):
-
-```yaml
-- name: Declare-and-verify the live MON.SVRCONN effective identity matches gw_sec_observer_principal
-  ansible.builtin.shell: |
-    set -o pipefail
-    echo "DISPLAY CHSTATUS('MON.SVRCONN') MCAUSER" | /opt/mqm/bin/runmqsc {{ qmgr_name }}
-  args:
-    executable: /bin/bash
+- name: Declare-and-verify the base lab's Stage-2 observer/app groups exist
+  ansible.builtin.command: "id {{ item }}"
   become: true
-  become_user: mqm
-  register: mon_chstatus
+  loop:
+    - "{{ gw_sec_observer_group }}"
+    - "{{ gw_sec_app_group }}"
+  register: gw_sec_group_check
   changed_when: false
-  # If the observer has never connected there is no CHSTATUS row; that is not a
-  # failure at apply time (the collector/exporter connect post-deploy). Only fail
-  # on a PRESENT-but-MISMATCHED identity, which would mean we are about to authrec
-  # the wrong principal.
-  failed_when: >-
-    mon_chstatus.rc != 0 or
-    ('MCAUSER(' in mon_chstatus.stdout and
-     'MCAUSER(' ~ gw_sec_observer_principal ~ ')' not in mon_chstatus.stdout and
-     'MCAUSER( )' not in mon_chstatus.stdout)
-```
+  failed_when: gw_sec_group_check.rc != 0
+  # A missing account means Stage 2 was never applied to this box (the deployment
+  # task's §6.0 prerequisite). Fail loudly rather than grant to a non-existent group.
 
-- [ ] **Step 5: Baseline-enumerate the pre-existing grants, then reconcile (spec §5 "no wider grant")**
-
-The identities work today with **zero authrecs of ours**, so authority already
-comes from somewhere — a group grant, a `+all` profile, or a privileged identity
-(the last is caught by the Operational Task B precondition). Strip the forbidden
-authorities deterministically, then enumerate to catch anything a principal-level
-strip can't reach:
-
-```yaml
-- name: Enumerate the pre-existing authority records on each GW.SEC.* object (baseline)
+- name: Declare-and-verify CHLAUTH is enabled (channels no longer run as mqm)
   ansible.builtin.shell: |
     set -o pipefail
-    for q in {{ q_instruct }} {{ q_instruct_audit }} {{ q_status_audit }} {{ q_reply }}; do
-      echo "DISPLAY AUTHREC PROFILE('$q') OBJTYPE(QUEUE) ALL" | /opt/mqm/bin/runmqsc {{ qmgr_name }}
-    done
+    echo "DISPLAY QMGR CHLAUTH" | /opt/mqm/bin/runmqsc {{ qmgr_name }}
   args:
     executable: /bin/bash
   become: true
   become_user: mqm
-  register: gw_sec_authrec_baseline
+  register: gw_sec_chlauth
   changed_when: false
-  failed_when: gw_sec_authrec_baseline.rc != 0
-
-- name: Strip forbidden authorities so the model holds regardless of prior grants
-  ansible.builtin.shell: |
-    set -o pipefail
-    echo "SET AUTHREC PROFILE('{{ item.profile }}') OBJTYPE(QUEUE) PRINCIPAL('{{ item.principal }}') AUTHRMV({{ item.auth | replace(' ', ', ') }})" \
-      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
-  args:
-    executable: /bin/bash
-  become: true
-  become_user: mqm
-  loop: "{{ gw_sec_authrmv }}"
-  register: gw_sec_strip
-  changed_when: "'AMQ8862' in gw_sec_strip.stdout or 'AMQ8858' in gw_sec_strip.stdout"
-  failed_when: gw_sec_strip.rc != 0
-
-- name: Fail loudly if a GROUP/+all grant still confers a forbidden authority we cannot localize
-  ansible.builtin.assert:
-    that:
-      # After the principal-level strip, re-inspect the baseline: any entity OTHER
-      # than our declared principals that carries browse/get/put on an AUDIT ledger
-      # is a wider grant. If it names a GROUP on OUR object, the implementer adds a
-      # GROUP-form AUTHRMV to gw_sec_authrmv (still our object, within boundary) and
-      # re-runs. If it is inherited from a QM-wide/lab mechanism we do not own, this
-      # is a declare-and-verify finding — STOP, do not cross the boundary.
-      - "'nobody-placeholder' not in gw_sec_authrec_baseline.stdout"
-    fail_msg: >-
-      A pre-existing wider grant on an audit ledger was found in the baseline
-      enumeration. If it is a GROUP grant on our GW.SEC.* object, add its
-      GROUP-form AUTHRMV to gw_sec_authrmv and re-apply. If it is a QM-wide/lab
-      grant, STOP and report it as a declare-and-verify finding — the model is
-      blocked on a base-lab decision (self-owning bolt-on rule).
-  # The assert `that` is a deliberate manual gate: the implementer reads the
-  # registered baseline output, confirms no non-declared entity confers a
-  # forbidden authority on an audit ledger, and encodes that judgement here (or
-  # extends gw_sec_authrmv). It exists so a wider grant cannot pass silently.
+  failed_when: "gw_sec_chlauth.rc != 0 or 'CHLAUTH(ENABLED)' not in gw_sec_chlauth.stdout"
 ```
 
-- [ ] **Step 6: Add the `SET AUTHREC` loop**
+- [ ] **Step 4: Apply the `setmqaut -g` grants** (mirrors the base lab's `su mqm -c "setmqaut …"` loop):
 
 ```yaml
-- name: Apply the least-privilege authority grants (SET AUTHREC on our GW.SEC.* objects)
+- name: Apply the least-privilege authority grants (setmqaut -g on our GW.SEC.* objects)
   ansible.builtin.shell: |
     set -o pipefail
-    echo "SET AUTHREC PROFILE('{{ item.profile }}') OBJTYPE(QUEUE) PRINCIPAL('{{ item.principal }}') AUTHADD({{ item.auth | replace(' ', ', ') }})" \
-      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+    /opt/mqm/bin/setmqaut -m {{ qmgr_name }} -n {{ item.object }} -t queue -g {{ item.group }} {{ item.authorities }}
   args:
     executable: /bin/bash
   become: true
   become_user: mqm
-  loop: "{{ gw_sec_authrecs }}"
-  register: gw_sec_authrec
-  changed_when: "'AMQ8862' in gw_sec_authrec.stdout or 'AMQ8858' in gw_sec_authrec.stdout"
-  failed_when: gw_sec_authrec.rc != 0
+  loop: "{{ gw_sec_grants }}"
+  register: gw_sec_setmqaut
+  changed_when: "'completed successfully' in gw_sec_setmqaut.stdout"
+  failed_when: gw_sec_setmqaut.rc != 0
 ```
 
-(`AMQ8862`/`AMQ8858` are the "authority record set/updated" acknowledgements;
-re-running with the same grants is a harmless no-op — the loop is idempotent.
-The strip in Step 5 runs **before** this add so the two never fight: we withhold
-`+browse`/`+get`/`+put` where forbidden, then grant only what the model allows.)
+(`setmqaut` takes each authority as its own `+xxx` token — `{{ item.authorities }}`
+expands to the space-separated list. Re-running with the same grants is idempotent.)
 
-- [ ] **Step 7: Verify BOTH the observer holds no get/put AND the app holds no browse**
+- [ ] **Step 5: Verify the grants** (mqmon browses but cannot get/put; mqapp holds no browse):
 
 ```yaml
-- name: Verify the observer holds browse/inq/dsp and NOT get/put on the audit ledgers
-  ansible.builtin.shell: |
-    set -o pipefail
-    echo "DISPLAY AUTHREC PROFILE('{{ q_instruct_audit }}') OBJTYPE(QUEUE) PRINCIPAL('{{ gw_sec_observer_principal }}')" \
-      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
-  args:
-    executable: /bin/bash
+- name: Verify mqmon holds browse but NOT get/put on an audit ledger
+  ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_observer_group }}"
   become: true
   become_user: mqm
-  register: observer_authrec
+  register: gw_sec_mon_aut
   changed_when: false
   failed_when: >-
-    observer_authrec.rc != 0 or
-    'browse' not in observer_authrec.stdout or
-    'get' in observer_authrec.stdout or
-    'put' in observer_authrec.stdout
+    gw_sec_mon_aut.rc != 0 or
+    'browse' not in gw_sec_mon_aut.stdout or
+    'get' in gw_sec_mon_aut.stdout or
+    'put' in gw_sec_mon_aut.stdout
 
-- name: Verify the application holds NO browse/get on the outbound audit ledger (§5 invariant)
-  ansible.builtin.shell: |
-    set -o pipefail
-    echo "DISPLAY AUTHREC PROFILE('{{ q_instruct_audit }}') OBJTYPE(QUEUE) PRINCIPAL('{{ gw_sec_app_principal }}')" \
-      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
-  args:
-    executable: /bin/bash
+- name: Verify mqapp holds NO browse/get on the outbound audit ledger
+  ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_app_group }}"
   become: true
   become_user: mqm
-  register: app_audit_authrec
+  register: gw_sec_app_aut
   changed_when: false
-  # The app may legitimately hold +put here; it must NOT hold browse or get.
+  # mqapp may hold +put here; it must NOT hold browse or get.
   failed_when: >-
-    app_audit_authrec.rc != 0 or
-    'browse' in app_audit_authrec.stdout or
-    'get' in app_audit_authrec.stdout
+    gw_sec_app_aut.rc != 0 or
+    'browse' in gw_sec_app_aut.stdout or
+    'get' in gw_sec_app_aut.stdout
 ```
 
-- [ ] **Step 8: Validate**
+- [ ] **Step 6: Validate** — `vrg-container-run -- vrg-validate` → PASS.
 
-```bash
-vrg-container-run -- vrg-validate
-```
-Expected: PASS.
-
-- [ ] **Step 9: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 vrg-commit --type feat --scope gw-sec-queues \
-  --message "enforce least-privilege authority grants on the GW.SEC.* audit objects" \
-  --body "SET AUTHREC (epic #235): observers get browse/inq/dsp on the audit ledgers only; the app gets put on the instruction path and get on the reply; the inbound MCA gets put on the reply. Declare-and-verify each effective principal against the live channel identity; DISPLAY AUTHREC asserts the observer holds no get/put. Idempotent, owned, replays on rebuild."
+  --message "grant least-privilege authorities on the GW.SEC.* objects (setmqaut -g)" \
+  --body "Epic #235: reuse the base lab's mqmon/mqapp groups; setmqaut -g grants mqmon +browse+inq+dsp on the audit ledgers (QM-written via STREAMQ, so no +put/+setall) and mqapp +put on the instruction path + get/inq/browse on the reply. Declare-and-verify Stage 2 (groups exist, CHLAUTH enabled); dspmqaut verifies mqmon has no get/put and mqapp no browse."
 ```
 
 ---
 
-## Task 4: `gw-sec-svc-queues` — responder-side (`SVC.SVRCONN`) grants
+## Task 4: `gw-sec-svc-queues` — `mqsvc` reply grant + responder side
 
-**Files:**
-- Modify: `ansible/roles/gw-sec-svc-queues/defaults/main.yml`
-- Modify: `ansible/roles/gw-sec-svc-queues/tasks/main.yml`
+**Files:** Modify `ansible/roles/gw-sec-svc-queues/defaults/main.yml` + `tasks/main.yml`.
 
-**Interfaces:**
-- Consumes: the responder identity `SVC.SVRCONN` resolves to.
-- Produces: least-privilege grants for the responder on the objects this role
-  owns on `SVCQM` (the landing queue it consumes, the reply QREMOTE it puts to).
+**Interfaces:** Grants the return-MCA identity `mqsvc` `+put +setall` on
+`GW.SEC.REPLY` (it writes replies there), and the responder's least-privilege
+grants on the `SVCQM` objects this role owns.
 
-**Context:** `gw-sec-svc-queues` owns the SVCQM-side objects: the landing QLOCAL
-the responder consumes (our instructions arrive there) and the return QREMOTE the
-responder puts replies to. Read the role first to get the exact object variable
-names; grant `+get +inq` on the landing queue and `+put` on the reply target,
-nothing else. Same declare-and-verify + `SET AUTHREC` + `DISPLAY AUTHREC` shape
-as Task 3.
+**Context:** `GW.SEC.REPLY` lives on our QM (`gw-sec-queues` defines it) but is
+written by the inter-QM **return MCA** (`mqsvc`) — under `PUTAUT(DEF)` the MCA
+opens the destination with `MQOO_SET_ALL_CONTEXT`, so it needs `+put +setall`
+(base lab context-authority finding, spec §10). The responder-side objects on
+`SVCQM` (landing queue it consumes, reply target it puts to) get the responder's
+Stage-2 identity's grants. Read the role first for the exact object + qmgr vars.
 
-- [ ] **Step 1: Read the role and its object names**
+- [ ] **Step 1: Read** `gw-sec-svc-queues/tasks/main.yml` + `defaults/main.yml`
+  (object names, `svc_qmgr`/`our_qmgr`), and confirm which role/QM owns
+  `GW.SEC.REPLY` — the `mqsvc` grant lands wherever `GW.SEC.REPLY` is defined
+  (our QM). If `GW.SEC.REPLY` is owned by `gw-sec-queues`, add the `mqsvc` grant
+  there (Task 3's grant map) instead and scope this task to the `SVCQM` responder
+  objects; the intent is one grant per owning role.
 
-Read `ansible/roles/gw-sec-svc-queues/tasks/main.yml` +
-`defaults/main.yml`; note the landing-queue and reply-target variable names and
-the `our_qmgr`/`svc_qmgr` context.
-
-- [ ] **Step 2: Add the responder principal + grant map to defaults**
+- [ ] **Step 2: Add the grant map to defaults**
 
 ```yaml
-# --- least-privilege authority model (epic #235), responder side --------------
-gw_sec_responder_principal: ""   # REQUIRED — effective user for SVC.SVRCONN (the responder)
+# --- least-privilege authority model (epic #235), reply + responder side ------
+gw_sec_mca_group: mqsvc            # the inter-QM return MCA writes GW.SEC.REPLY
+gw_sec_responder_group: ""         # REQUIRED — SVC.SVRCONN Stage-2 identity on SVCQM (declare-and-verify)
 
-# Grant map for the objects this role owns on SVCQM. Least privilege: the
-# responder consumes our instructions from the landing queue and puts replies to
-# the return target; nothing else.
-gw_sec_svc_authrecs:
-  - { profile: "<landing-queue-var>",     principal: "{{ gw_sec_responder_principal }}", auth: "GET INQ" }
-  - { profile: "<reply-target-var>",      principal: "{{ gw_sec_responder_principal }}", auth: "PUT" }
+# mqsvc on GW.SEC.REPLY (our QM): +put +setall (context authority for the MCA).
+gw_sec_reply_grant:
+  - { group: "{{ gw_sec_mca_group }}", object: "{{ q_reply }}", authorities: "+put +setall" }
+
+# Responder grants on the objects this role owns on SVCQM.
+gw_sec_svc_grants:
+  - { group: "{{ gw_sec_responder_group }}", object: "<landing-queue-var>",  authorities: "+get +inq" }
+  - { group: "{{ gw_sec_responder_group }}", object: "<reply-target-var>",   authorities: "+put" }
 ```
 
-Replace `<landing-queue-var>`/`<reply-target-var>` with the actual variable
-names read in Step 1 (e.g. the role's landing QLOCAL and reply QREMOTE).
+Replace `<landing-queue-var>`/`<reply-target-var>` with the real names from Step 1.
 
-- [ ] **Step 3: Add the assert-provided guard + `SET AUTHREC` loop + `DISPLAY AUTHREC` verify**
+- [ ] **Step 3: Add declare-and-verify + `setmqaut -g` loops + `dspmqaut` verify**
+  mirroring Task 3 Steps 3–5, targeting the correct queue manager for each grant
+  (`GW.SEC.REPLY` on our QM; the responder objects on `svc_qmgr`). Verify `mqsvc`
+  holds `+put +setall` on `GW.SEC.REPLY` and nothing on the audit ledgers.
 
-Mirror Task 3's assert-provided guard (Step 3), `SET AUTHREC` add loop (Step 6),
-and `DISPLAY AUTHREC` verify (Step 7), substituting `gw_sec_svc_authrecs`,
-`gw_sec_responder_principal`, and the SVCQM queue-manager variable
-(`svc_qmgr`/`our_qmgr` per the role) for the target queue manager. The responder
-side has no audit ledgers of ours, so the baseline-reconcile of Task 3 Step 5 is
-not needed here; still verify the responder holds `+get` on the landing queue and
-nothing beyond its two grants.
-
-- [ ] **Step 4: Validate**
-
-```bash
-vrg-container-run -- vrg-validate
-```
-Expected: PASS.
+- [ ] **Step 4: Validate** — `vrg-container-run -- vrg-validate` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 vrg-commit --type feat --scope gw-sec-svc-queues \
-  --message "enforce least-privilege authority grants for the responder on SVCQM" \
-  --body "SET AUTHREC (epic #235): the responder (SVC.SVRCONN) gets get/inq on its landing queue and put on its reply target, nothing else. Declare-and-verify the effective principal; DISPLAY AUTHREC asserts the grant. Idempotent, owned."
+  --message "grant mqsvc +put+setall on the reply and least-privilege responder grants" \
+  --body "Epic #235: the inter-QM return MCA (mqsvc) needs +put +setall on GW.SEC.REPLY (context authority under PUTAUT(DEF)); the responder gets get/put on its own SVCQM objects. setmqaut -g, declare-and-verify, dspmqaut-verified."
 ```
 
 ---
 
 ## Task 5: Docs — "Security & permissions" section
 
-**Files:**
-- Modify: `docs/mq-native-settlement-tracking.md`
-- Modify: `ansible/README.md`
+**Files:** Modify `docs/mq-native-settlement-tracking.md` + `ansible/README.md`.
 
-**Interfaces:**
-- Consumes: the model as implemented in Tasks 1–4.
-- Produces: the human-facing description of the model + the ownership boundary.
+- [ ] **Step 1: Read** the doc's headings for the insertion point.
 
-**Context:** No setup/config doc currently describes object permissions. Add a
-focused section to the settlement-tracking doc and a pointer from the Ansible
-README. Content is generic; invented identity names only.
+- [ ] **Step 2: Write the section** covering: the grant model (the spec §5 table);
+  the **reuse of the base lab's `mqapp`/`mqmon`/`mqsvc` identities** and its
+  `SSLPEERMAP`/`setmqaut -g` mechanism; that the audit ledgers are QM-written so
+  observers need only `+browse`; the **ownership boundary** (base lab owns the
+  channel identities + Stage 2, generic; we own the `GW.SEC.*` grants); and that
+  browse-only is now QM-enforced, proven by the 2035 test. Cross-reference the base
+  lab's `mq-authorization-guide.md`.
 
-- [ ] **Step 1: Read the doc's current structure**
+- [ ] **Step 3: Add the `ansible/README.md` pointer** noting `gw-sec-queues`/
+  `gw-sec-svc-queues` add the `setmqaut -g` grants for the base lab's groups and
+  the exporter connects as `mqmon`.
 
-Read `docs/mq-native-settlement-tracking.md` headings to find the right insertion
-point (after the deployment/observability material, before any appendix).
-
-- [ ] **Step 2: Write the "Security & permissions" section**
-
-Add a section covering, in prose + the §5 grant table from the spec:
-
-- The least-privilege model: app `+put`/`+get`; observers `+browse +inq +dsp`;
-  inbound MCA `+put`; responder its own grants — each identity and what it may
-  and may not do.
-- **Observer-identity separation:** every audit-queue reader (collector and
-  exporter) connects as the dedicated `MON.SVRCONN`/`mon-client` monitoring
-  identity; the business `APP.SVRCONN` identity carries **no browse right** on
-  the history.
-- **The ownership boundary:** we `SET AUTHREC` only on `GW.SEC.*` objects we own
-  and point our own observability roles at the existing monitoring identity; we
-  **define no channel and change no `CHLAUTH`/`MCAUSER`** — those are the base
-  lab's, declare-and-verified.
-- **Enforced, not conventional:** browse-only is now a queue-manager authority,
-  proven by the 2035 denial test (reference the validation task).
-
-- [ ] **Step 3: Add the README pointer**
-
-In `ansible/README.md`, add a one-line pointer under the roles overview to the
-new "Security & permissions" section, noting that `gw-sec-queues`/
-`gw-sec-svc-queues` set the least-privilege authrecs and `gw-sec-observability`
-connects as the observer identity.
-
-- [ ] **Step 4: Validate**
-
-```bash
-vrg-container-run -- vrg-validate
-```
-Expected: PASS (markdownlint clean).
+- [ ] **Step 4: Validate** — `vrg-container-run -- vrg-validate` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 vrg-commit --type docs --scope security \
-  --message "document the least-privilege authority model and ownership boundary" \
-  --body "New Security & permissions section (epic #235): the per-identity grant model, the observer-identity separation, and the self-owning-bolt-on boundary (we authrec our own objects; the lab owns the channels)."
+  --message "document the least-privilege model, reusing the base lab's authz identities" \
+  --body "Epic #235: Security & permissions section — the grant model, reuse of mqapp/mqmon/mqsvc + SSLPEERMAP + setmqaut -g, the QM-written audit ledgers, and the ownership boundary."
 ```
 
 ---
 
-## Operational Task A (deployment): apply the least-privilege model to the live lab
+## Operational Task A (deployment): establish Stage 2, then apply the model
 
 Filed with `vrg-issue-create --kind deployment`, **blocked-by Tasks 1–4**. Not
 PR-workable; run with `issue-deploy`. Closes on `Outcome: SUCCESS`.
 
-- **Precondition self-check:** Tasks 1–4 merged to develop; the `mon-client`
-  keystore + the effective-principal variables available at apply time. If a
-  required secret/var is unset, comment "blocked: preconditions not met" and stop.
-- **Procedure:** apply the settlement plays from `site.yml` against the live lab
-  (`gw-sec-queues`, `gw-sec-svc-queues`, `gw-sec-observability`,
-  `gw-sec-collector`) with the principal + keystore variables supplied. The roles'
-  own declare-and-verify + `DISPLAY AUTHREC` assertions gate the apply.
-- **Acceptance:** the playbook completes green; `DISPLAY AUTHREC` shows the
-  intended grants; the exporter + collector are running as the `MON.SVRCONN`
-  identity.
+- **§6.0 — Establish the base lab's Stage 2 on `NHAUAPP` (prerequisite).** The box
+  is pre-hardening (no `mqapp`/`mqmon`/`mqsvc`, `CHLAUTH(DISABLED)`). Apply the base
+  lab's **own generic** authorization (`site-nativeha-ubuntu.yml` authz —
+  `mq-authz-accounts` + `authz.mqsc.j2` CHLAUTH maps + its base `setmqaut -g`).
+  Owned/automated from this repo (invoke the base lab playbook), declare-and-verified.
+  Nothing bolt-on-specific is added to the base lab.
+- **Precondition self-check:** Tasks 1–4 merged; the `mon-client` keystore + Stage-2
+  apply inputs available. If unmet, comment "blocked: preconditions not met" and stop.
+- **Procedure:** (1) apply base lab Stage 2 to `NHAUAPP`; verify `mqapp`/`mqmon`/
+  `mqsvc` exist and `CHLAUTH(ENABLED)`. (2) apply our settlement plays from
+  `site.yml` (`gw-sec-queues`, `gw-sec-svc-queues`, `gw-sec-observability`,
+  `gw-sec-collector`) with the identity/keystore inputs. The roles' declare-and-verify
+  + `dspmqaut` assertions gate the apply.
+- **Acceptance:** both applies complete green; `dspmqaut` shows the intended grants;
+  the channels resolve to `mqapp`/`mqmon` (not `mqm`); exporter + collector run as `mqmon`.
 
 ## Operational Task B (validation): prove the model — positive paths + 2035 denials
 
-Filed with `vrg-issue-create --kind validation`, **blocked-by Operational Task
-A**. Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
+Filed with `vrg-issue-create --kind validation`, **blocked-by Operational Task A**.
+Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
 
-- **Precondition self-check (blocks if unmet):** each effective identity
-  (`MON.SVRCONN` observer, `APP.SVRCONN` app, inbound MCA) is **non-privileged
-  and not a member of `mqm`** — else OAM bypasses the authrecs and no 2035 can
-  fire. Discover via `DISPLAY CHSTATUS … MCAUSER` + group membership. If any is
-  privileged, comment the blocked reason and **stop** (never fabricate a pass).
-- **Positive paths:** app puts an instruction → streams to counterparty + retained;
-  reply lands on `GW.SEC.REPLY` → streams to `GW.SEC.STATUS.AUDIT`; both observers
-  (collector + reidentified exporter) browse both ledgers and their metrics
-  advance. No regression.
-- **No-wider-grant enumeration (spec §5):** `DISPLAY AUTHREC PROFILE('<each
-  GW.SEC.* queue>') OBJTYPE(QUEUE) ALL` and confirm **no** entity other than the
-  declared principals confers `+browse`/`+get`/`+put` on an audit ledger — i.e.
-  the Task 3 Step 5 reconcile left no group/`+all` grant behind. A residual wider
-  grant is a FAILURE (or, if lab-owned, a blocked declare-and-verify finding).
-- **Negative denials (the load-bearing proof):** under the `MON.SVRCONN` observer
-  identity, a destructive `MQGET` and an `MQPUT` on an audit ledger each return
-  **MQRC 2035**; under the `APP.SVRCONN` app identity, an `MQOO_BROWSE` of an
-  audit ledger returns **2035**. (These are the live confirmation of the
-  enumeration above — the enumeration says *why*, the denial proves the *effect*.)
-- **Boundary assertion:** the applied change touched only `GW.SEC.*` authrecs +
-  our observability role's identity config; the lab's channels/`CHLAUTH` are
-  unchanged.
-- **Acceptance:** all positive paths green AND all three denials return 2035;
-  record the evidence in the `Outcome: SUCCESS` comment.
+- **Precondition self-check (blocks if unmet):** Stage 2 present — `mqapp`/`mqmon`/
+  `mqsvc` exist, `CHLAUTH(ENABLED)`, and `DISPLAY CHSTATUS … MCAUSER` shows the
+  channels resolving to `mqapp`/`mqmon`, **not** `mqm`. If any channel still resolves
+  to `mqm`, comment the blocked reason and **stop** (never fabricate a pass).
+- **Positive paths:** `mqapp` puts an instruction → streams to counterparty +
+  retained; a reply lands on `GW.SEC.REPLY` (written by `mqsvc`) → streams to
+  `GW.SEC.STATUS.AUDIT`; both observers (`mqmon`: collector + reidentified exporter)
+  browse both ledgers and metrics advance. No regression.
+- **Negative denials (the load-bearing proof):** under `mqmon`, a destructive
+  `MQGET` and an `MQPUT` on an audit ledger each return **MQRC 2035**; under `mqapp`,
+  an `MQOO_BROWSE` of an audit ledger returns **2035**.
+- **No-wider-grant enumeration:** `dmpmqaut`/`DISPLAY AUTHREC` on each audit ledger
+  confirms only `mqmon` (+ the `mqm` admin default) holds browse, and `mqapp` holds
+  no browse/get.
+- **Boundary assertion:** Stage 2 came from the base lab's generic playbook; our added
+  change is only the `GW.SEC.*` `setmqaut -g` grants + the exporter identity config.
+- **Acceptance:** all positive paths green AND all three denials return 2035; record
+  the evidence in the `Outcome: SUCCESS` comment. Model the harness on the base lab's
+  `site-nativeha-ubuntu-authz-validate.yml`.
 
 ---
 
 ## Self-Review
 
 **Spec coverage:**
-- Spec §1/§2 (separate observer from business identity) → Tasks 1, 2.
-- Spec §5 grant table (app / observers / inbound MCA) → Task 3; responder → Task 4.
-- Spec §5 invariants (per-operation authority; **no wider grant**) → Task 3
-  Step 5 baseline-enumerate + reconcile (`AUTHRMV` forbidden authorities;
-  stop-with-finding on lab-owned grants) + Step 7 dual `DISPLAY AUTHREC` verify
-  (observer no get/put; app no browse) + Operational Task B enumeration and
-  app-browse denial.
-- Spec §3 boundary + Open Q1 (declare-and-verify identity) → Task 3 Steps 3–4;
-  Global Constraints.
-- Spec §3 non-privileged precondition → Operational Task B precondition.
-- Spec §6 docs → Task 5.
-- Spec §7 validation (positive + 2035 denials + boundary) → Operational Tasks A/B.
-- Spec Open Q3 (alias authority) → Task 3 grants `+put` on both alias and base.
+- Spec §6.0 (establish Stage 2) → Operational Task A prerequisite.
+- Spec §2/§6.1–.2 (mqmon observer; collector wiring) → Tasks 1, 2.
+- Spec §5 grant table → Task 3 (mqmon/mqapp) + Task 4 (mqsvc/responder).
+- Spec §5 invariants (audit ledgers QM-written, no +setall; mqapp no browse;
+  groups not principals) → Task 3 defaults + Step 5 verify; Task 4 `mqsvc` confined
+  to `GW.SEC.REPLY`.
+- Spec §3 declare-and-verify Stage 2 → Task 3 Step 3; Operational Task A/B preconditions.
+- Spec §6.5 docs → Task 5.
+- Spec §7 validation (Stage-2 precondition + positive + 2035 + boundary) → Operational Tasks A/B.
 
-**Open items deferred to the plan's own choices (resolved):**
-- Open Q1 (discovery timing) → declare-the-principal + verify-against-CHSTATUS.
-- Open Q2 (principal vs group) → PRINCIPAL for the lab; the grant map's
-  `principal` field can hold a group name with a `GROUP` objtype toggle if a
-  production run prefers groups — noted in the Task 3 defaults comment.
-- Open Q4 (inbound-MCA identity) → `gw_sec_mca_principal` var, granted `+put` on
-  our `GW.SEC.REPLY` only; channel untouched.
+**Resolved spec open questions:** principal-vs-group → **groups** (base lab);
+identity discovery → declare-and-verify the base lab's `SSLPEERMAP` Stage 2.
 
-**Placeholder scan:** Task 4 Step 2 intentionally carries `<landing-queue-var>`/
-`<reply-target-var>` placeholders **because** the exact SVCQM object variable
-names must be read from the role in Step 1 — the step says so explicitly. Every
-other step carries real content.
+**Placeholder scan:** Task 4 Step 2 carries `<landing-queue-var>`/`<reply-target-var>`
+because the exact `SVCQM` object names must be read from the role in Step 1 (the step
+says so). Everything else is concrete.
 
-**Type/name consistency:** variable names (`gw_sec_observer_principal`,
-`gw_sec_app_principal`, `gw_sec_mca_principal`, `gw_sec_responder_principal`,
-`gw_sec_authrecs`, `gw_sec_svc_authrecs`, `gw_sec_exporter_mon_client_p12/_pw`)
-are used identically across defaults, tasks, and the operational tasks.
+**Type/name consistency:** `gw_sec_observer_group` (mqmon), `gw_sec_app_group`
+(mqapp), `gw_sec_mca_group` (mqsvc), `gw_sec_responder_group`, `gw_sec_grants`,
+`gw_sec_reply_grant`, `gw_sec_svc_grants`, `gw_sec_exporter_mon_client_p12/_pw` are
+used identically across defaults, tasks, and the operational tasks.
