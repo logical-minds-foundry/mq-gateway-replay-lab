@@ -114,3 +114,14 @@
   gather_facts: false
   roles:
     - gw-sec-observability
+
+# Deploy the streaming settlement collector: the box-only stateful reader that
+# browses both GW.SEC.* audit queues as the mqmon observer identity (MON.SVRCONN)
+# and publishes derived metrics to Prometheus (epic #65). Wired here so the
+# committed deploy matches live (epic #235). Owns only /opt/gwlab + its own unit
+# + its own monitoring keystore.
+- name: Deploy the gateway SWIFT settlement collector (streaming, box-only)
+  hosts: gateway_obs
+  gather_facts: false
+  roles:
+    - gw-sec-collector
