@@ -59,9 +59,11 @@ the settlement gateway — its `mqapp` (application), `mqmon` (monitoring,
 read-only), and `mqsvc` (QM-to-QM receiver MCA) group identities, its
 `CHLAUTH SSLPEERMAP` cert-DN→user mapping, and its `setmqaut -g` grant mechanism —
 and **layer our own `GW.SEC.*` grants** on top so each identity holds only what
-its role needs. Prove it live, including the denial paths. As part of this,
-**every audit-queue reader connects as the read-only `mqmon` identity** (over
-`MON.SVRCONN`), leaving the `mqapp` business identity with no browse rights.
+its role needs. Prove it live, including the denial paths. As part of this, the
+**observability tooling connects as the read-only `mqmon` identity** (over
+`MON.SVRCONN`), never the business identity; the app (`mqapp`) additionally holds
+**read-only** access to its *own* history on the audit ledgers. No identity but the
+admin can consume or mutate the ledgers.
 
 ## 3. The boundary principle (corrected self-owning bolt-on rule)
 
@@ -126,16 +128,20 @@ there is **no distinct `mon-client` cert** — that name was only a placeholder.
 Two crux points:
 
 1. **The audit ledgers are written by the queue manager's STREAMQ engine, under
-   the QM's own authority.** No client identity puts to them, so **no `+put`/`+setall`
-   grant is needed on the audit queues** — only `mqmon` needs `+browse`. (This
-   corrects the original spec, which granted an inbound MCA `+put +setall` on an
-   audit queue.) The `+setall` context-authority concern lives on **`GW.SEC.REPLY`**,
-   which the inter-QM **return MCA** genuinely writes.
-2. **`GW.SEC.INSTRUCT.AUDIT` is reached by two identities with different rights** —
-   `mqapp` *puts* to it via the alias (the retained original); `mqmon` *browses*
-   it; **neither may `GET`**, and `mqapp` may **not browse**. A message leaves an
-   audit ledger only by expiry (`CAPEXPRY`); `CLEAR`/`DELETE` is a separate
-   privileged administrative act (`mqm`).
+   the QM's own authority.** The only client write is the app's retained-original
+   `+put` to the outbound audit; there is **no client `+get`/`+setall`** on them.
+   (This corrects the original spec, which granted an inbound MCA `+put +setall` on
+   an audit queue.) The `+setall` context-authority concern lives on
+   **`GW.SEC.REPLY`**, which the inter-QM **return MCA** genuinely writes.
+2. **The audit ledgers are the application's own history, readable read-only by
+   more than one identity.** `mqapp` *puts* the retained original to
+   `GW.SEC.INSTRUCT.AUDIT` and may *browse* both ledgers to view its own history;
+   `mqmon` *browses* both for out-of-band monitoring. **Neither may `GET`** (which
+   would consume the retained original) or otherwise mutate them. The collector is
+   merely one example of the passive readers the ledgers enable; the app reading its
+   own history is another. A message leaves an audit ledger only by expiry
+   (`CAPEXPRY`); `CLEAR`/`DELETE` is a separate privileged administrative act
+   (`mqm`).
 
 ## 5. The full least-privilege model (target end-state)
 
@@ -145,10 +151,17 @@ grants on the objects `gw-sec-queues`/`gw-sec-svc-queues` own:
 
 | Group (via) | Object | Authorities | Explicitly NOT |
 |---|---|---|---|
-| `mqapp` (`APP.SVRCONN`) | `GW.SEC.INSTRUCT` alias → `GW.SEC.INSTRUCT.AUDIT` | `+put` | `+browse +get +set +dlt +clr` |
-| `mqapp` (`APP.SVRCONN`) | `GW.SEC.REPLY` | `+get +inq +browse` | `+browse`/`+get` on the audit ledgers |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.INSTRUCT` alias → `GW.SEC.INSTRUCT.AUDIT` | `+put +browse +inq` | `+get +set +dlt +clr` |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.STATUS.AUDIT` | `+browse +inq` | `+get +put +set +dlt +clr` |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.REPLY` (real-time) | `+get +inq` | `+browse` (anti-pattern on a live queue) |
 | `mqmon` (`MON.SVRCONN`) — collector **and** exporter | `GW.SEC.INSTRUCT.AUDIT`, `GW.SEC.STATUS.AUDIT` | `+browse +inq +dsp` | `+get +put +set +dlt +clr` |
 | `mqsvc` (return MCA) | `GW.SEC.REPLY` | `+put +setall` | anything on the audit ledgers |
+
+Both `mqapp` and `mqmon` read the audit ledgers **read-only** (browse/inq); the
+app additionally holds `+put` on the outbound audit for the retained original.
+The app's read-only access to its own history is a deliberate design capability —
+the ledgers serve out-of-band monitoring *and* the app viewing its own history —
+even though the current implementation does not exercise the app-read path.
 
 Grants follow the base lab's `authz.yml` shape (`{ group, object_type, object,
 authorities }`) and its `qmgr +connect` grants (already established by Stage 2 for
@@ -165,12 +178,21 @@ Model-level invariants:
   effective `MCAUSER` (`mqapp`/`mqmon`) is a real OS principal whose primary group
   carries the authority; granting to the group is the base lab's convention and the
   portable choice across failover nodes.
-- **Audit ledgers are QM-written (STREAMQ).** No client `+put`/`+setall` on them;
-  only `mqmon +browse`. `+setall` is confined to `mqsvc` on `GW.SEC.REPLY`, per the
-  base lab's context-authority finding (see §10 sources).
-- **Authorities are per-operation.** `+put` on `GW.SEC.INSTRUCT.AUDIT` for `mqapp`
-  does not confer `+browse`; the validation confirms `mqapp` holds no browse/get on
-  either audit ledger from any source.
+- **Audit ledgers are read-mostly, non-destructively.** The only client write is
+  the app's retained-original `+put` to the outbound audit; both `mqapp` and `mqmon`
+  otherwise hold **read-only** (`+browse +inq`, plus `+dsp` for `mqmon`). No client
+  holds `+get`/`+set`/`+clr`/`+dlt` on either ledger. `+setall` is confined to
+  `mqsvc` on `GW.SEC.REPLY`, per the base lab's context-authority finding (§10).
+- **Browse belongs on the audit ledgers, never the real-time queues.** The audit
+  ledgers exist to be read (`+browse`), and their integrity is protected precisely
+  because **no one can `GET`** them — a message leaves only by expiry (`CAPEXPRY`).
+  The request/reply queues (`GW.SEC.INSTRUCT`, `GW.SEC.REPLY`) are the opposite: a
+  live get/put flow, where **`+browse` is withheld** — browsing an in-flight queue
+  meant for real-time processing is a performance anti-pattern. `+inq` (attribute
+  query) is fine on either; `+browse` is not granted on the real-time queues.
+- **Authorities are per-operation.** `+put`/`+browse` on an audit ledger does **not**
+  confer `+get`; the validation confirms neither `mqapp` nor `mqmon` holds `+get` on
+  either audit ledger from any source — the load-bearing non-destructive invariant.
 - **`+connect`** is a base-lab Stage-2 grant for `mqapp`/`mqmon`; we
   declare-and-verify it, we do not add it.
 - **Administrative cleanup** (`CLEAR`, `DELETE`) stays with `mqm`; never `mqmon`
@@ -197,7 +219,7 @@ bolt-on-specific is added to the base lab.**
    deploy matches what runs live (hot-deployed during epic #175).
 3. **`gw-sec-queues`** — declare-and-verify Stage 2 is present, then `setmqaut -g`
    the §5 grants for `mqmon`/`mqapp` on our queues; verify `mqmon` holds no
-   get/put on the audit ledgers and `mqapp` holds no browse.
+   get/put on the audit ledgers and `mqapp` is read-only there (may browse; no get).
 4. **`gw-sec-svc-queues`** — the `mqsvc` grant on `GW.SEC.REPLY` (`+put +setall`)
    and the responder-side grants on `SVCQM`.
 5. **Docs** — a "Security & permissions" section in the settlement-tracking setup
@@ -227,17 +249,19 @@ With the precondition met:
 - **Positive paths still work.** App (`mqapp`) puts an instruction; it streams to
   the counterparty and is retained; a reply lands on `GW.SEC.REPLY` (written by the
   `mqsvc` return MCA) and streams to `GW.SEC.STATUS.AUDIT`; **both** observers on
-  `MON.SVRCONN` (`mqmon`) browse both audit ledgers and their metrics advance. No
-  regression from the new grants or the exporter identity switch.
-- **Negative denials fire (the load-bearing test).** Under `mqmon`, a destructive
-  `MQGET` and an `MQPUT` against an audit ledger each return **MQRC 2035
-  (`MQRC_NOT_AUTHORIZED`)**. Under `mqapp`, an `MQOO_BROWSE` of an audit ledger
-  returns **2035**. These denials are the evidence that browse-only is now enforced
-  by the queue manager, and that the business identity can no longer read the
-  history.
+  `MON.SVRCONN` (`mqmon`) browse both audit ledgers and their metrics advance. The
+  app (`mqapp`) can also `MQOO_BROWSE` both ledgers read-only — its own history — and
+  succeeds. No regression from the new grants or the exporter identity switch.
+- **Negative denials fire (the load-bearing test).** Under **both** `mqmon` and
+  `mqapp`, a destructive `MQGET` against an audit ledger returns **MQRC 2035
+  (`MQRC_NOT_AUTHORIZED`)**, as does an `MQPUT` under `mqmon` (and any `MQPUT` under
+  `mqapp` on the QM-written `GW.SEC.STATUS.AUDIT`). These denials are the evidence
+  that access is **read-only, enforced by the queue manager** — no identity but the
+  admin (`mqm`) can consume or mutate the history.
 - **No-wider-grant enumeration.** `DISPLAY AUTHREC` / `dmpmqaut` on each audit
-  ledger confirms no group other than `mqmon` (and the `mqm` admin default) holds
-  browse/get, and `mqapp` holds no browse.
+  ledger confirms **no** group (beyond the `mqm` admin default) holds `+get` — only
+  `mqmon` and `mqapp` hold read-only `+browse +inq` (plus the app's retained-original
+  `+put` on the outbound audit).
 - **Boundary assertion.** Stage 2 came from the base lab's own generic playbook; our
   added change is only the `GW.SEC.*` `setmqaut -g` grants + our observability
   role's identity config. The base lab carries no `GW.SEC.*` knowledge.

@@ -206,8 +206,14 @@ gw_sec_grants:
   - { group: "{{ gw_sec_observer_group }}", object: "{{ q_instruct_audit }}", authorities: "+browse +inq +dsp" }
   - { group: "{{ gw_sec_observer_group }}", object: "{{ q_status_audit }}",   authorities: "+browse +inq +dsp" }
   - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct }}",       authorities: "+put" }
-  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct_audit }}", authorities: "+put" }
-  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_reply }}",          authorities: "+get +inq +browse" }
+  # Audit ledgers = the app's own history: read-only (browse+inq) + the retained-
+  # original put on the outbound audit. NEVER +get (would consume the original).
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct_audit }}", authorities: "+put +browse +inq" }
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_status_audit }}",   authorities: "+browse +inq" }
+  # Real-time reply queue: get/put flow, +inq for attributes, but NO +browse
+  # (browsing a live in-flight queue is a performance anti-pattern).
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_reply }}",          authorities: "+get +inq" }
+  - { group: "{{ gw_sec_mca_group }}",      object: "{{ q_reply }}",          authorities: "+put +setall" }
 ```
 
 - [ ] **Step 3: Declare-and-verify Stage 2 is present** (append to `tasks/main.yml`):
@@ -259,7 +265,7 @@ gw_sec_grants:
 (`setmqaut` takes each authority as its own `+xxx` token — `{{ item.authorities }}`
 expands to the space-separated list. Re-running with the same grants is idempotent.)
 
-- [ ] **Step 5: Verify the grants** (mqmon browses but cannot get/put; mqapp holds no browse):
+- [ ] **Step 5: Verify the grants** (mqmon browses but cannot get/put; mqapp is read-only on the audit ledgers — may browse, no get; and holds no browse on the real-time reply queue):
 
 ```yaml
 - name: Verify mqmon holds browse but NOT get/put on an audit ledger
@@ -274,16 +280,17 @@ expands to the space-separated list. Re-running with the same grants is idempote
     'get' in gw_sec_mon_aut.stdout or
     'put' in gw_sec_mon_aut.stdout
 
-- name: Verify mqapp holds NO browse/get on the outbound audit ledger
+- name: Verify mqapp is read-only on the outbound audit ledger (may browse; NOT get)
   ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_app_group }}"
   become: true
   become_user: mqm
   register: gw_sec_app_aut
   changed_when: false
-  # mqapp may hold +put here; it must NOT hold browse or get.
+  # The audit ledger is the app's own history: mqapp may read it (browse+inq) and
+  # holds +put for the retained original — but it must NOT hold +get.
   failed_when: >-
     gw_sec_app_aut.rc != 0 or
-    'browse' in gw_sec_app_aut.stdout or
+    'browse' not in gw_sec_app_aut.stdout or
     'get' in gw_sec_app_aut.stdout
 ```
 
@@ -294,7 +301,7 @@ expands to the space-separated list. Re-running with the same grants is idempote
 ```bash
 vrg-commit --type feat --scope gw-sec-queues \
   --message "grant least-privilege authorities on the GW.SEC.* objects (setmqaut -g)" \
-  --body "Epic #235: reuse the base lab's mqmon/mqapp groups; setmqaut -g grants mqmon +browse+inq+dsp on the audit ledgers (QM-written via STREAMQ, so no +put/+setall) and mqapp +put on the instruction path + get/inq/browse on the reply. Declare-and-verify Stage 2 (groups exist, CHLAUTH enabled); dspmqaut verifies mqmon has no get/put and mqapp no browse."
+  --body "Epic #235: reuse the base lab's mqmon/mqapp/mqsvc groups; setmqaut -g grants mqmon +browse+inq+dsp on the audit ledgers and mqapp read-only (+browse +inq) on both audit ledgers (its own history) plus the retained-original +put on the outbound audit; mqapp +get +inq on the real-time reply (no browse — anti-pattern on a live queue); mqsvc +put +setall on the reply. Declare-and-verify Stage 2; dspmqaut verifies no client holds +get on the audit ledgers."
 ```
 
 ---
@@ -421,10 +428,12 @@ Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
 - **Positive paths:** `mqapp` puts an instruction → streams to counterparty +
   retained; a reply lands on `GW.SEC.REPLY` (written by `mqsvc`) → streams to
   `GW.SEC.STATUS.AUDIT`; both observers (`mqmon`: collector + reidentified exporter)
-  browse both ledgers and metrics advance. No regression.
-- **Negative denials (the load-bearing proof):** under `mqmon`, a destructive
-  `MQGET` and an `MQPUT` on an audit ledger each return **MQRC 2035**; under `mqapp`,
-  an `MQOO_BROWSE` of an audit ledger returns **2035**.
+  browse both ledgers and metrics advance; `mqapp` also browses both audit ledgers
+  read-only (its own history) and succeeds. No regression.
+- **Negative denials (the load-bearing proof):** a destructive `MQGET` on an audit
+  ledger returns **MQRC 2035** under **both** `mqmon` and `mqapp`; an `MQPUT` on an
+  audit ledger returns **2035** under `mqmon`; and an `MQOO_BROWSE` of the real-time
+  `GW.SEC.REPLY` returns **2035** under `mqapp` (browse withheld on the live queue).
 - **No-wider-grant enumeration:** `dmpmqaut`/`DISPLAY AUTHREC` on each audit ledger
   confirms only `mqmon` (+ the `mqm` admin default) holds browse, and `mqapp` holds
   no browse/get.
@@ -442,9 +451,10 @@ Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
 - Spec §6.0 (establish Stage 2) → Operational Task A prerequisite.
 - Spec §2/§6.1–.2 (mqmon observer; collector wiring) → Tasks 1, 2.
 - Spec §5 grant table → Task 3 (mqmon/mqapp) + Task 4 (mqsvc/responder).
-- Spec §5 invariants (audit ledgers QM-written, no +setall; mqapp no browse;
-  groups not principals) → Task 3 defaults + Step 5 verify; Task 4 `mqsvc` confined
-  to `GW.SEC.REPLY`.
+- Spec §5 invariants (audit ledgers read-only/non-destructive — mqapp & mqmon
+  browse+inq, no client +get; browse withheld on the real-time reply queue; groups
+  not principals) → Task 3 defaults + Step 5 verify; Task 4 `mqsvc` confined to
+  `GW.SEC.REPLY`.
 - Spec §3 declare-and-verify Stage 2 → Task 3 Step 3; Operational Task A/B preconditions.
 - Spec §6.5 docs → Task 5.
 - Spec §7 validation (Stage-2 precondition + positive + 2035 + boundary) → Operational Tasks A/B.

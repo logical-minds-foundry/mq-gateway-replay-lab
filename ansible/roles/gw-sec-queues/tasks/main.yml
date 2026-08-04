@@ -171,14 +171,16 @@
     'get' in gw_sec_mon_aut.stdout or
     'put' in gw_sec_mon_aut.stdout
 
-- name: Verify mqapp holds NO browse/get on the outbound audit ledger
+- name: Verify mqapp is read-only on the outbound audit ledger (may browse; NOT get)
   ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_app_group }}"
   become: true
   become_user: mqm
   register: gw_sec_app_aut
   changed_when: false
-  # mqapp may hold +put here; it must NOT hold browse or get.
+  # The audit ledger is the app's own history: mqapp may read it (browse+inq) and
+  # holds +put for the retained original — but it must NOT hold +get (that would
+  # consume the retained original), the load-bearing non-destructive invariant.
   failed_when: >-
     gw_sec_app_aut.rc != 0 or
-    'browse' in gw_sec_app_aut.stdout or
+    'browse' not in gw_sec_app_aut.stdout or
     'get' in gw_sec_app_aut.stdout
