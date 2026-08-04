@@ -395,10 +395,13 @@ service accounts, cert-DN identity maps, and group-scoped grants — and layers
 only the grants for the `GW.SEC.*` objects this repo owns on top:
 
 - **`mqapp`** — the application identity (over `APP.SVRCONN`). Puts
-  instructions; reads replies.
+  instructions, gets replies, and may **browse its own history read-only** on the
+  audit ledgers (the audit copies are the app's messages — it is entitled to read
+  them back, non-destructively).
 - **`mqmon`** — the monitoring identity (over `MON.SVRCONN`), read-only. Every
   audit-queue reader — the streaming collector **and** the per-scrape
-  Prometheus exporter — connects as `mqmon`.
+  Prometheus exporter — connects as `mqmon`. The collector is merely **one example**
+  of the passive readers the audit ledgers enable.
 - **`mqsvc`** — the inter-QM return message channel agent (MCA), which writes
   confirmations onto the reply queue.
 
@@ -415,8 +418,9 @@ objects `gw-sec-queues` / `gw-sec-svc-queues` own:
 
 | Group (via) | Object | Authorities | Explicitly NOT |
 |---|---|---|---|
-| `mqapp` (`APP.SVRCONN`) | `GW.SEC.INSTRUCT` alias → `GW.SEC.INSTRUCT.AUDIT` | `+put` | `+browse +get +set +dlt +clr` |
-| `mqapp` (`APP.SVRCONN`) | `GW.SEC.REPLY` | `+get +inq +browse` | `+browse` / `+get` on the audit ledgers |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.INSTRUCT` alias → `GW.SEC.INSTRUCT.AUDIT` | `+put +browse +inq` | `+get +set +dlt +clr` |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.STATUS.AUDIT` | `+browse +inq` | `+get +put +set +dlt +clr` |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.REPLY` (real-time) | `+get +inq` | `+browse` (anti-pattern on a live queue) |
 | `mqmon` (`MON.SVRCONN`) — collector **and** exporter | `GW.SEC.INSTRUCT.AUDIT`, `GW.SEC.STATUS.AUDIT` | `+browse +inq +dsp` | `+get +put +set +dlt +clr` |
 | `mqsvc` (return MCA) | `GW.SEC.REPLY` | `+put +setall` | anything on the audit ledgers |
 
@@ -424,15 +428,21 @@ Model-level invariants:
 
 - **The audit ledgers are QM-written (STREAMQ).** The `STREAMQ … STRMQOS(MUSTDUP)`
   copies onto `GW.SEC.INSTRUCT.AUDIT` and `GW.SEC.STATUS.AUDIT` are produced by
-  the queue manager's streaming engine under its own authority — **no client
-  identity puts to them**. So the observers need only **`+browse`**; there is no
-  `+put` or `+setall` grant on any audit queue. `+setall` (context authority) is
-  **confined to `mqsvc` on `GW.SEC.REPLY`**, the one destination the inter-QM
-  return MCA genuinely writes (under `PUTAUT(DEF)` it opens the queue with
-  `MQOO_SET_ALL_CONTEXT`, per the base lab's context-authority finding).
-- **Authorities are per-operation.** `mqapp`'s `+put` on
-  `GW.SEC.INSTRUCT.AUDIT` (the retained original, put via the alias) confers no
-  `+browse` — the business identity can **not** read the history back.
+  the queue manager's streaming engine under its own authority; the only client
+  write is the app's retained-original `+put` on the outbound audit. `+setall`
+  (context authority) is **confined to `mqsvc` on `GW.SEC.REPLY`**, the one
+  destination the inter-QM return MCA genuinely writes (under `PUTAUT(DEF)` it opens
+  the queue with `MQOO_SET_ALL_CONTEXT`, per the base lab's context-authority finding).
+- **Browse belongs on the audit ledgers, never the real-time queues.** The audit
+  ledgers exist to be *read* — both `mqmon` (monitoring) and `mqapp` (its own
+  history) hold **read-only** `+browse +inq` — and their integrity is protected
+  because **no one can `GET`** them: a message leaves only by expiry (`CAPEXPRY`).
+  The request/reply queues are the opposite — a live get/put flow — so **`+browse`
+  is withheld** there: browsing an in-flight queue meant for real-time processing is
+  a performance anti-pattern. `+inq` (attribute query) is fine on either.
+- **No client is destructive on the history.** No identity but the `mqm` admin holds
+  `+get`/`+set`/`+clr`/`+dlt` on either audit ledger — `+put`/`+browse` never confer
+  `+get`.
 - **`+connect`** is a base-lab Stage-2 grant for `mqapp`/`mqmon`; we
   declare-and-verify it, we do not add it.
 - **Administrative cleanup** (`CLEAR`, `DELETE`) stays with the `mqm` admin
@@ -470,13 +480,15 @@ The split follows the corrected self-owning-bolt-on rule (CLAUDE.md, epic #234):
 
 Before this epic every process connected as the `mqm` super-user (channels
 pinned to `MCAUSER(mqm)`, `CHLAUTH(DISABLED)`), for which OAM checks are
-bypassed — "browse-only" lived only in reader code. With Stage 2 applied and the
-grants in place, **browse-only is a queue-manager-enforced authority**. The
-proof is the **denial**: under `mqmon`, a destructive `MQGET` or an `MQPUT`
-against an audit ledger each return **MQRC 2035 (`MQRC_NOT_AUTHORIZED`)**; under
-`mqapp`, an `MQOO_BROWSE` of an audit ledger returns **2035**. A `dspmqaut`
-enumeration confirms no group other than `mqmon` (and the `mqm` admin default)
-holds browse, and that `mqapp` holds no browse/get on either ledger.
+bypassed — the **non-destructive, read-only** posture lived only in reader code.
+With Stage 2 applied and the grants in place, it is a **queue-manager-enforced
+authority**. The proof is the **denial**: a destructive `MQGET` against an audit
+ledger returns **MQRC 2035 (`MQRC_NOT_AUTHORIZED`)** under **both** `mqmon` and
+`mqapp` (neither may consume the history), as does an `MQPUT` under `mqmon`; and
+an `MQOO_BROWSE` of the real-time `GW.SEC.REPLY` returns **2035** under `mqapp`
+(browse is withheld on the live queue). A `dspmqaut` enumeration confirms that
+**no** group beyond the `mqm` admin default holds `+get` on either audit ledger —
+only the read-only `+browse +inq` the model grants.
 
 For the authoritative model — the service accounts, the `SSLPEERMAP` maps, the
 `setmqaut -g` convention, and the context-authority finding behind `mqsvc`'s

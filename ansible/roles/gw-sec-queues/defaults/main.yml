@@ -63,8 +63,13 @@ gw_sec_capexpry: "{{ gw_sec_horizon_days * 864000 }}"
 
 # --- least-privilege authority model (epic #235) — mirrors the base lab -------
 # Reuses the base lab's Stage-2 groups (mqapp/mqmon/mqsvc); grants via setmqaut -g
-# on the queues this repo owns. Audit ledgers are QM-written (STREAMQ) so they take
-# NO client +put/+setall — only mqmon +browse. Shape mirrors base lab authz.yml.
+# on the queues this repo owns. The audit ledgers hold the application's own message
+# history: they are QM-written (STREAMQ), so the only write is the app's retained-
+# original put to the outbound audit — no client +get/+setall/+clr/+dlt. BOTH the
+# observers (mqmon) and the application (mqapp) get READ-ONLY access (browse+inq) to
+# that history: the audit queues serve out-of-band monitoring AND the app viewing its
+# own history — the collector is merely one example of the passive readers they enable.
+# Shape mirrors base lab authz.yml.
 gw_sec_observer_group: mqmon    # MON.SVRCONN observers (collector + exporter)
 gw_sec_app_group: mqapp         # APP.SVRCONN application
 gw_sec_mca_group: mqsvc         # the inter-QM return MCA writes GW.SEC.REPLY
@@ -73,8 +78,15 @@ gw_sec_grants:
   - { group: "{{ gw_sec_observer_group }}", object: "{{ q_instruct_audit }}", authorities: "+browse +inq +dsp" }
   - { group: "{{ gw_sec_observer_group }}", object: "{{ q_status_audit }}",   authorities: "+browse +inq +dsp" }
   - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct }}",       authorities: "+put" }
-  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct_audit }}", authorities: "+put" }
-  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_reply }}",          authorities: "+get +inq +browse" }
+  # The app puts the retained original here AND may read its own history (browse+inq),
+  # read-only — never +get (that would consume the retained original).
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_instruct_audit }}", authorities: "+put +browse +inq" }
+  # The inbound status history is QM-written (STREAMQ); the app reads it read-only.
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_status_audit }}",   authorities: "+browse +inq" }
+  # The reply queue is the real-time get/put flow, NOT a history: the app gets from
+  # it (+inq for attributes) but must NOT browse it — browsing a live in-flight queue
+  # is a performance anti-pattern. Browse belongs on the audit ledgers, never here.
+  - { group: "{{ gw_sec_app_group }}",      object: "{{ q_reply }}",          authorities: "+get +inq" }
   # This role owns/defines GW.SEC.REPLY (q_reply), so the return MCA's context grant
   # lands here: under PUTAUT(DEF) the inter-QM return MCA opens the reply with
   # MQOO_SET_ALL_CONTEXT, so mqsvc needs +put +setall to write inbound replies.
