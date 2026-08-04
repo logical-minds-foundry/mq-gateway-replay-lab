@@ -114,3 +114,71 @@
   register: verify_channel
   changed_when: false
   failed_when: verify_channel.rc != 0 or 'CHANNEL(' not in verify_channel.stdout
+
+# --- least-privilege authority model (epic #235) ------------------------------
+# Stage 2 (base-lab accounts + CHLAUTH SSLPEERMAP) is a §6.0 prerequisite the
+# deployment task establishes on this box; here we declare-and-verify it is
+# present, then layer our setmqaut -g grants on the GW.SEC.* objects we own.
+- name: Declare-and-verify the base lab's Stage-2 observer/app/MCA groups exist
+  ansible.builtin.command: "id {{ item }}"
+  become: true
+  loop:
+    - "{{ gw_sec_observer_group }}"
+    - "{{ gw_sec_app_group }}"
+    - "{{ gw_sec_mca_group }}"
+  register: gw_sec_group_check
+  changed_when: false
+  failed_when: gw_sec_group_check.rc != 0
+  # A missing account means Stage 2 was never applied to this box (the deployment
+  # task's §6.0 prerequisite). Fail loudly rather than grant to a non-existent group.
+
+- name: Declare-and-verify CHLAUTH is enabled (channels no longer run as mqm)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY QMGR CHLAUTH" | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: gw_sec_chlauth
+  changed_when: false
+  failed_when: "gw_sec_chlauth.rc != 0 or 'CHLAUTH(ENABLED)' not in gw_sec_chlauth.stdout"
+
+- name: Apply the least-privilege authority grants (setmqaut -g on our GW.SEC.* objects)
+  ansible.builtin.shell: |
+    set -o pipefail
+    /opt/mqm/bin/setmqaut -m {{ qmgr_name }} -n {{ item.object }} -t queue -g {{ item.group }} {{ item.authorities }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  loop: "{{ gw_sec_grants }}"
+  register: gw_sec_setmqaut
+  changed_when: "'completed successfully' in gw_sec_setmqaut.stdout"
+  failed_when: gw_sec_setmqaut.rc != 0
+  # setmqaut takes each authority as its own +xxx token; item.authorities expands
+  # to the space-separated list. Re-running with the same grants is idempotent.
+
+- name: Verify mqmon holds browse but NOT get/put on an audit ledger
+  ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_observer_group }}"
+  become: true
+  become_user: mqm
+  register: gw_sec_mon_aut
+  changed_when: false
+  failed_when: >-
+    gw_sec_mon_aut.rc != 0 or
+    'browse' not in gw_sec_mon_aut.stdout or
+    'get' in gw_sec_mon_aut.stdout or
+    'put' in gw_sec_mon_aut.stdout
+
+- name: Verify mqapp holds NO browse/get on the outbound audit ledger
+  ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct_audit }} -t queue -g {{ gw_sec_app_group }}"
+  become: true
+  become_user: mqm
+  register: gw_sec_app_aut
+  changed_when: false
+  # mqapp may hold +put here; it must NOT hold browse or get.
+  failed_when: >-
+    gw_sec_app_aut.rc != 0 or
+    'browse' in gw_sec_app_aut.stdout or
+    'get' in gw_sec_app_aut.stdout
