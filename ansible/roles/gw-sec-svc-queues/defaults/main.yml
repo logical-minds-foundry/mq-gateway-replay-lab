@@ -36,3 +36,22 @@ gw_sec_max_depth: 999999999
 # qmgr_name is intentionally left unset — it must be provided at apply time
 # (SVCQM's live instance name at the counterparty). A missing value fails
 # loudly (see tasks), so a mis-targeted apply never silently hits the wrong box.
+
+# --- least-privilege authority model (epic #235), responder side --------------
+# Mirrors the base lab: grants via setmqaut -g to a Stage-2 group, never to a
+# principal. Scoped to the objects THIS role owns on SVCQM — the landing QLOCAL
+# the responder consumes (q_instruct) and the reply QREMOTE it puts to (q_reply).
+# The mqsvc +put+setall grant on GW.SEC.REPLY (our QM) is NOT here: GW.SEC.REPLY
+# is owned by gw-sec-queues and that grant is handled in its role (issue #241).
+#
+# gw_sec_responder_group is the SVC.SVRCONN Stage-2 identity on SVCQM — the
+# account the counterparty responder connects as. Intentionally unset: no
+# misleading default. A missing value fails loudly (see tasks) and is
+# declare-and-verified to exist before any grant is applied.
+gw_sec_responder_group: ""
+
+# Responder least-privilege grants on the objects this role owns on SVCQM:
+# +get +inq to consume the landing queue, +put to route replies back to us.
+gw_sec_svc_grants:
+  - { group: "{{ gw_sec_responder_group }}", object: "{{ q_instruct }}", authorities: "+get +inq" }
+  - { group: "{{ gw_sec_responder_group }}", object: "{{ q_reply }}",     authorities: "+put" }

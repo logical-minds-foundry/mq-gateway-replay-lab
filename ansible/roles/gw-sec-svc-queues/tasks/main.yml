@@ -85,3 +85,56 @@
   register: verify_channel
   changed_when: false
   failed_when: verify_channel.rc != 0 or 'CHANNEL(' not in verify_channel.stdout
+
+# --- least-privilege authority model (epic #235), responder side --------------
+# Grant the responder's Stage-2 identity least privilege on the SVCQM objects
+# this role owns: +get +inq on the landing queue, +put on the reply route. The
+# mqsvc +put+setall grant on GW.SEC.REPLY (our QM) is handled in issue #241
+# (gw-sec-queues owns that queue). Mirrors the base lab's setmqaut -g mechanism.
+
+- name: Assert the responder Stage-2 group was provided
+  ansible.builtin.assert:
+    that:
+      - gw_sec_responder_group is defined
+      - gw_sec_responder_group | length > 0
+    fail_msg: >-
+      gw_sec_responder_group must be set to the SVC.SVRCONN Stage-2 identity on
+      SVCQM (the account the counterparty responder connects as). A missing
+      value fails loudly rather than granting to a non-existent group.
+
+- name: Declare-and-verify the responder Stage-2 group exists on SVCQM (fail loudly if absent)
+  ansible.builtin.command: "id {{ gw_sec_responder_group }}"
+  become: true
+  register: gw_sec_responder_check
+  changed_when: false
+  failed_when: gw_sec_responder_check.rc != 0
+  # A missing account means Stage 2 was never applied to this box (the deployment
+  # task's prerequisite). Fail loudly rather than grant to a non-existent group.
+
+- name: Apply the least-privilege responder grants (setmqaut -g on our SVCQM objects)
+  ansible.builtin.shell: |
+    set -o pipefail
+    /opt/mqm/bin/setmqaut -m {{ qmgr_name }} -n {{ item.object }} -t queue -g {{ item.group }} {{ item.authorities }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  loop: "{{ gw_sec_svc_grants }}"
+  register: gw_sec_svc_setmqaut
+  changed_when: "'completed successfully' in gw_sec_svc_setmqaut.stdout"
+  failed_when: gw_sec_svc_setmqaut.rc != 0
+
+- name: Verify the responder holds +get on the landing queue and nothing beyond its two grants
+  ansible.builtin.command: "/opt/mqm/bin/dspmqaut -m {{ qmgr_name }} -n {{ q_instruct }} -t queue -g {{ gw_sec_responder_group }}"
+  become: true
+  become_user: mqm
+  register: gw_sec_responder_aut
+  changed_when: false
+  # The responder gets exactly +get +inq on the landing queue: get must be
+  # present; browse/put/set must NOT (put/set belong on the reply route only).
+  failed_when: >-
+    gw_sec_responder_aut.rc != 0 or
+    'get' not in gw_sec_responder_aut.stdout or
+    'browse' in gw_sec_responder_aut.stdout or
+    'put' in gw_sec_responder_aut.stdout or
+    'set' in gw_sec_responder_aut.stdout
