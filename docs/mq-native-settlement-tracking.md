@@ -379,7 +379,111 @@ carry the detail:
 - [`scenario-catalog/`](scenario-catalog/index.md) — seven reproducible failure
   episodes, each with its macro signature and the register that reveals it.
 
-## 13. Beyond MT540–548 — the deferred generalization
+## 13. Security & permissions — the least-privilege authority model
+
+"Browse-only passive observer" is the design's headline property: many
+independent tools read the rolling audit history at once, none able to alter or
+consume it, while exactly one application owns the transactional processing.
+This section documents how that guarantee is made a **queue-manager-enforced**
+boundary rather than a convention held only in reader code (epic #235).
+
+### 13.1 Reuse, don't reinvent — the base lab's identities
+
+The gateway does **not** invent its own principals or `CHLAUTH` rules. It
+**reuses the base lab's already-defined least-privilege model** — three OS
+service accounts, cert-DN identity maps, and group-scoped grants — and layers
+only the grants for the `GW.SEC.*` objects this repo owns on top:
+
+- **`mqapp`** — the application identity (over `APP.SVRCONN`). Puts
+  instructions; reads replies.
+- **`mqmon`** — the monitoring identity (over `MON.SVRCONN`), read-only. Every
+  audit-queue reader — the streaming collector **and** the per-scrape
+  Prometheus exporter — connects as `mqmon`.
+- **`mqsvc`** — the inter-QM return message channel agent (MCA), which writes
+  confirmations onto the reply queue.
+
+Identities reach the queue manager over the base lab's channels, mapped by
+**`CHLAUTH SSLPEERMAP`** (the presented client certificate's Distinguished Name
+→ an OS user), and authorities are granted with **`setmqaut -g`** to the
+account's primary group — never to principals, never via `SET AUTHREC`. This is
+the base lab's mechanism throughout; we mirror its `authz.yml` grant-map shape.
+
+### 13.2 The grant model
+
+Each identity holds only what its role needs. The grants this epic adds on the
+objects `gw-sec-queues` / `gw-sec-svc-queues` own:
+
+| Group (via) | Object | Authorities | Explicitly NOT |
+|---|---|---|---|
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.INSTRUCT` alias → `GW.SEC.INSTRUCT.AUDIT` | `+put` | `+browse +get +set +dlt +clr` |
+| `mqapp` (`APP.SVRCONN`) | `GW.SEC.REPLY` | `+get +inq +browse` | `+browse` / `+get` on the audit ledgers |
+| `mqmon` (`MON.SVRCONN`) — collector **and** exporter | `GW.SEC.INSTRUCT.AUDIT`, `GW.SEC.STATUS.AUDIT` | `+browse +inq +dsp` | `+get +put +set +dlt +clr` |
+| `mqsvc` (return MCA) | `GW.SEC.REPLY` | `+put +setall` | anything on the audit ledgers |
+
+Model-level invariants:
+
+- **The audit ledgers are QM-written (STREAMQ).** The `STREAMQ … STRMQOS(MUSTDUP)`
+  copies onto `GW.SEC.INSTRUCT.AUDIT` and `GW.SEC.STATUS.AUDIT` are produced by
+  the queue manager's streaming engine under its own authority — **no client
+  identity puts to them**. So the observers need only **`+browse`**; there is no
+  `+put` or `+setall` grant on any audit queue. `+setall` (context authority) is
+  **confined to `mqsvc` on `GW.SEC.REPLY`**, the one destination the inter-QM
+  return MCA genuinely writes (under `PUTAUT(DEF)` it opens the queue with
+  `MQOO_SET_ALL_CONTEXT`, per the base lab's context-authority finding).
+- **Authorities are per-operation.** `mqapp`'s `+put` on
+  `GW.SEC.INSTRUCT.AUDIT` (the retained original, put via the alias) confers no
+  `+browse` — the business identity can **not** read the history back.
+- **`+connect`** is a base-lab Stage-2 grant for `mqapp`/`mqmon`; we
+  declare-and-verify it, we do not add it.
+- **Administrative cleanup** (`CLEAR`, `DELETE`) stays with the `mqm` admin
+  identity; never `mqmon` or `mqapp`. A message leaves an audit ledger only by
+  expiry (`CAPEXPRY`).
+
+### 13.3 Verified cert-DN alignment
+
+The `SSLPEERMAP` maps resolve each channel to its non-privileged account off the
+client certificate's DN. Verified alignment:
+
+| Client certificate | Channel | → identity |
+|---|---|---|
+| `app-client` (`OU=apps`) | `APP.SVRCONN` | `mqapp` |
+| `mq_prometheus` (`OU=ops`) | `MON.SVRCONN` | `mqmon` |
+| `svc-responder` (`O=svc-org`) | return channel | `mqsvc` |
+
+### 13.4 The ownership boundary
+
+The split follows the corrected self-owning-bolt-on rule (CLAUDE.md, epic #234):
+
+- **The base lab owns the channel identities and Stage 2** — the `mqapp`/`mqmon`/
+  `mqsvc` accounts, the `CHLAUTH SSLPEERMAP` maps, and the `+connect` base grants.
+  These stay **generic**; the base lab never learns about `GW.SEC.*`. Because the
+  running box was provisioned pre-hardening, establishing Stage 2 there is an
+  **owned, automated prerequisite** — we apply the base lab's **own generic**
+  authorization playbook and **declare-and-verify** it (accounts exist,
+  `CHLAUTH(ENABLED)`, channels resolve to the non-privileged accounts, **not**
+  `mqm`). A residual `mqm` identity is a **loud stop**, never a silent widening.
+- **We own only the `GW.SEC.*` grants** — the `setmqaut -g` grants in the table
+  above, 100% automated by this repo's Ansible (`gw-sec-queues`,
+  `gw-sec-svc-queues`) and replayable on a from-scratch rebuild.
+
+### 13.5 Browse-only, now enforced and proven
+
+Before this epic every process connected as the `mqm` super-user (channels
+pinned to `MCAUSER(mqm)`, `CHLAUTH(DISABLED)`), for which OAM checks are
+bypassed — "browse-only" lived only in reader code. With Stage 2 applied and the
+grants in place, **browse-only is a queue-manager-enforced authority**. The
+proof is the **denial**: under `mqmon`, a destructive `MQGET` or an `MQPUT`
+against an audit ledger each return **MQRC 2035 (`MQRC_NOT_AUTHORIZED`)**; under
+`mqapp`, an `MQOO_BROWSE` of an audit ledger returns **2035**. A `dspmqaut`
+enumeration confirms no group other than `mqmon` (and the `mqm` admin default)
+holds browse, and that `mqapp` holds no browse/get on either ledger.
+
+For the authoritative model — the service accounts, the `SSLPEERMAP` maps, the
+`setmqaut -g` convention, and the context-authority finding behind `mqsvc`'s
+`+setall` — see the base lab's MQ authorization guide,
+`docs/site/docs/guides/mq-authorization-guide.md` in `mq-resiliency-lab-for-linux`.
+
+## 14. Beyond MT540–548 — the deferred generalization
 
 This recommendation is built to the **public ISO 15022 MT540–548** rendering. The
 ISO 20022 successors — `sese.023` (instruction), `sese.024` (status advice),

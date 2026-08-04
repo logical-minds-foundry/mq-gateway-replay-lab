@@ -104,3 +104,12 @@ ansible-playbook -i inventory/lab.yml site.yml --limit gateway_obs \
 > The exact active-node host, queue-manager names, and SVCQM host are
 > confirmed against the live 3+3 (and the counterparty) at apply time; set
 > `lab_qm_host` / `qmgr_name` / `svc_qm_host` / `our_qmgr` accordingly.
+
+## Least-privilege authorities
+
+`gw-sec-queues` / `gw-sec-svc-queues` add the `setmqaut -g` grants for the base
+lab's Stage-2 groups (`mqapp` / `mqmon` / `mqsvc`) on the `GW.SEC.*` objects, and
+the observability exporter connects as the read-only `mqmon` identity (the
+`mq_prometheus` / `OU=ops` certificate over `MON.SVRCONN`). See "Security &
+permissions" in [`docs/mq-native-settlement-tracking.md`](../docs/mq-native-settlement-tracking.md)
+for the full model and the ownership boundary.
