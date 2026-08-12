@@ -298,7 +298,7 @@ Subcommands:
 Prefix `rr_` (configurable), label `stream`. Six gauges — the
 kernel-plus-scan-cost set:
 
-```
+```text
 rr_requests{stream}          # in-window (cohort) request count
 rr_replied{stream}           # matched
 rr_outstanding{stream}       # unmatched — the backlog
@@ -316,7 +316,7 @@ The per-request series, value = age in seconds, **capped at the `--top-n` oldest
 during exactly the outage this tool observes, so an uncapped series-per-request
 would risk destabilising Prometheus when it matters most:
 
-```
+```text
 rr_outstanding_message{stream,msgid,sent} <age_seconds>   # top-N oldest
 rr_outstanding_truncated{stream} <count_omitted>          # never a silent cap
 ```

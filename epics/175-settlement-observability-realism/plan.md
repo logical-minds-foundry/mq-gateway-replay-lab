@@ -30,6 +30,7 @@
 ### Task 1: Calibration reference doc
 
 **Files:**
+
 - Create: `docs/settlement-failure-rate-reference.md`
 
 The sourced research is the calibration source of truth; every rate in Task 2 cites it. No code; this is the data-vs-judgment reference.
@@ -47,10 +48,12 @@ vrg-commit --type docs --scope calibration --message "sourced settlement-failure
 ### Task 2: Reason-family classifier
 
 **Files:**
+
 - Create: `src/gwlab/swift/reasons.py`
 - Test: `tests/swift/test_reasons.py`
 
 **Interfaces:**
+
 - Produces: `class ReasonFamily(StrEnum)` with members `SETTLEMENT`, `CASH`, `MATCHING`, `REJECTION`, `OTHER`; `def classify(message: SwiftMessage) -> ReasonFamily | None` — the exception family a *response* signals, or `None` if it carries no exception signature. Consumed by Tasks 5 (segmentation) and 11 (scenarios).
 
 Grounded in `reference.py`: `IPRC//REJT` → REJECTION; `MTCH//NMAT` → MATCHING; `SETT//PENF` with a `:24B:` reason in `{LACK, CLAC}` → SETTLEMENT, in `{MONY, CMON}` → CASH; other `PENF` → SETTLEMENT (default fail family); everything else → `None`.
@@ -129,10 +132,12 @@ vrg-commit --type feat --scope swift --message "reason-family classifier (macro 
 ### Task 3: Asset-class books + realistic/mechanism mode
 
 **Files:**
+
 - Modify: `src/gwlab/swift/generator.py`
 - Test: `tests/swift/test_generator_books.py`
 
 **Interfaces:**
+
 - Produces: `REALISTIC_BOOKS: dict[str, Mix]` (equity/govvie/etf, calibrated per Task 1); `MECHANISM_MIX: Mix` (= today's `DEFAULT_MIX`); `def generate_realistic(count, *, seed=0, target_size_bytes=1024) -> list[GeneratedInstruction]` blending the books by share. Existing `generate(count, mix=...)` is unchanged (preserves `mechanism` mode).
 
 - [ ] **Step 1: Write the failing test**
@@ -199,10 +204,12 @@ def generate_realistic(count: int, *, seed: int = 0, target_size_bytes: int = 10
 ### Task 4: Audit-queue depth via MQINQ on the Messaging port
 
 **Files:**
+
 - Modify: `src/gwlab/messaging.py` (Protocol + `fake_messaging.py`), `src/gwlab/pymqi_messaging.py`
 - Test: `tests/swift/test_fake_messaging_depth.py`
 
 **Interfaces:**
+
 - Produces: `Messaging.inquire_depth(queue: str) -> tuple[int, int]` returning `(current_depth, max_depth)`. `FakeMessaging` returns configured values; `PyMqiMessaging` opens the queue for inquire and reads `CURDEPTH`/`MAXDEPTH` (box-only, covered by the fake-pymqi surface per the repo's coverage pattern).
 
 - [ ] **Step 1: Write the failing test**
@@ -227,10 +234,12 @@ def test_inquire_depth_returns_current_and_max():
 ### Task 5: Macro-segment accounting in SettlementState
 
 **Files:**
+
 - Modify: `src/gwlab/swift/stream/state.py`
 - Test: `tests/swift/test_state_segments.py`
 
 **Interfaces:**
+
 - Produces: `SettlementState.segment_counts() -> dict[tuple[str, str, str], int]` keyed by `(state, reason_family, msg_type)` → count, computed from the maintained entries. `_Entry` gains `reason_family: ReasonFamily = ReasonFamily.OTHER`, updated in `_apply` via `reasons.classify` (keep the last non-`None` family). `msg_type` is `entry.instruction.mt`; `state` is `entry.state.current`. Also `SettlementState.oldest_age_seconds(now: datetime) -> float` — the age of the oldest retained instruction (the expiry-window-stability signal, spec Unit 8), `0.0` when empty.
 
 - [ ] **Step 1: Write the failing test**
@@ -287,10 +296,12 @@ def oldest_age_seconds(self, now: datetime) -> float:
 ### Task 6: Segmented + audit-queue metrics exposition
 
 **Files:**
+
 - Modify: `src/gwlab/swift/stream/selfmetrics.py`
 - Test: `tests/swift/test_segment_exposition.py`
 
 **Interfaces:**
+
 - Consumes: `SettlementState.segment_counts()` (Task 5), `Messaging.inquire_depth` (Task 4).
 - Produces: `render_segment_metrics(counts: dict[tuple[str,str,str], int]) -> list[str]` emitting `swift_settlement_segment_total{state,reason_family,msg_type}`; `render_audit_queue_metrics(depths: dict[str, tuple[int,int]]) -> list[str]` emitting `swift_audit_queue_depth{queue}`, `swift_audit_queue_max_depth{queue}`, `swift_audit_queue_fill_ratio{queue}`; and `render_oldest_age_metric(age_seconds: float) -> list[str]` emitting the single gauge `swift_audit_oldest_age_seconds` (from `SettlementState.oldest_age_seconds`). Disk/log **consumption** is *not* recreated here — it comes from the MQ Prometheus exporter (Task 7), per the spec's minimal-footprint boundary.
 
@@ -321,10 +332,12 @@ def test_audit_queue_fill_ratio():
 ### Task 7: Board Register A (normal-day) + Register C (infra health), and exporter queue config
 
 **Files:**
+
 - Modify: `src/gwlab/swift/board.py`, `ansible/roles/gw-sec-observability/` (exporter queue-monitor config)
 - Test: `tests/swift/test_board_registers.py`
 
 **Interfaces:**
+
 - Consumes: the metrics from Task 6.
 - Produces: `build_settlement_board` gains Register A (efficiency-% headline `sum(...settled...)/sum(...all...)`, fails by `reason_family`, fails by `msg_type` — each on its own panel) and Register C (audit-queue depth/fill-ratio, `swift_audit_oldest_age_seconds`, an **expiry-window-stability** timeseries on `swift_audit_queue_depth` over time, and **disk/log filesystem-in-use from the MQ exporter** — footprint, not node-disk-IO contention). Retires the settled-dominated bar chart.
 
@@ -361,10 +374,12 @@ def test_board_retires_settled_dominated_bar():
 ### Task 8: Anomaly-scoring primitives (binomial-z + min-sample + EWMA)
 
 **Files:**
+
 - Create: `src/gwlab/swift/stream/anomaly.py`
 - Test: `tests/swift/test_anomaly.py`
 
 **Interfaces:**
+
 - Produces: `def deviation_z(observed_fails: int, observed_n: int, expected_p: float, *, min_sample: int = 30) -> float | None` (binomial proportion z-score, `None` below `min_sample`); `class Ewma` with `__init__(alpha: float)`, `update(x: float) -> float`, `value` property.
 
 - [ ] **Step 1: Write the failing test**
@@ -433,10 +448,12 @@ class Ewma:
 ### Task 9: Wire deviation scoring into the collector + expose metrics
 
 **Files:**
+
 - Modify: `src/gwlab/swift/stream/state.py`, `src/gwlab/swift/stream/selfmetrics.py`
 - Test: `tests/swift/test_state_deviation.py`
 
 **Interfaces:**
+
 - Consumes: `deviation_z`, `Ewma` (Task 8), `segment_counts` (Task 5), configured baselines (Task 3 book rates rolled up per reason_family).
 - Produces: `SettlementState.deviations(baselines: dict[str, float]) -> dict[str, float]` — per-`reason_family` z-score over the window; a per-family `Ewma` maintained across `report` calls; exposition `render_deviation_metrics` → `swift_segment_fail_deviation{dim="reason_family",id=...}` and `swift_segment_fail_ewma{...}`.
 
@@ -460,10 +477,12 @@ def test_reason_family_deviation_positive_above_baseline():
 ### Task 10: Board Register B (exceptional-event detection)
 
 **Files:**
+
 - Modify: `src/gwlab/swift/board.py`
 - Test: `tests/swift/test_board_register_b.py`
 
 **Interfaces:**
+
 - Consumes: Task 9 metrics.
 - Produces: Register B — a `swift_segment_fail_deviation` panel per `reason_family` with threshold coloring (z≥3 red), a rare-event amplification panel for `reason_family="rejection"` (deltas/sparkline so a 0→N burst is loud), and an EWMA-trend panel.
 
@@ -478,10 +497,12 @@ def test_reason_family_deviation_positive_above_baseline():
 ### Task 11: Scenario injection harness (the 7 episodes)
 
 **Files:**
+
 - Create: `src/gwlab/swift/scenarios.py`
 - Test: `tests/swift/test_scenarios.py`
 
 **Interfaces:**
+
 - Consumes: `generate_realistic` (Task 3), `corpus` renderers, `ReasonFamily` (Task 2).
 - Produces: `SCENARIOS: dict[str, Scenario]` (7 named episodes: `counterparty_outage`, `csd_incident`, `lack_of_securities`, `stale_ssi`, `rejection_burst`, `funding_squeeze`, `silent_degradation`). `class Scenario` with `name`, `isolating_dimension`, `expected_family`, and `def episode(seed: int) -> list[tuple[str, str]]` returning `(queue_alias, message_text)` pairs — a realistic baseline plus a concentrated perturbation. Deterministic given `seed`.
 
@@ -513,10 +534,12 @@ def test_episode_is_deterministic():
 ### Task 12: Scenario catalog runner + snapshot capture
 
 **Files:**
+
 - Create: `src/gwlab/swift/catalog.py`, `docs/scenario-catalog/` (output dir + index)
 - Test: `tests/swift/test_catalog.py`
 
 **Interfaces:**
+
 - Consumes: `SCENARIOS` (Task 11).
 - Produces: `def metric_dump(scenario_name: str, seed: int) -> dict` — the deterministic driving metric values (the reproducible source of truth), and `def render_catalog_page(scenario, dump) -> str` — the per-scenario markdown (what broke, signature, isolating dimension, which register reveals it). The live PNG is captured during validation (Task V); if the base-lab renderer (`mq-resiliency-lab-for-linux#877`) is deployed, `catalog.py` calls the render API, else the page references a screenshot path.
 
@@ -531,6 +554,7 @@ def test_episode_is_deterministic():
 ### Task 13: Reusable observability-primitives reference
 
 **Files:**
+
 - Create: `docs/observability-primitives.md`
 
 - [ ] **Step 1: Write the doc** — the generalizable pattern: incidents are concentrations; detect deviation-per-macro-dimension (binomial-z for spikes, EWMA for drift); keep the metric surface macro and non-sensitive; the macro signal points to where the full-detail system drills down. Cross-reference the scenario catalog.

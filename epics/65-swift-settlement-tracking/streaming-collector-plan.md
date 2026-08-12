@@ -74,11 +74,13 @@ Prometheus text exposition, Ansible, systemd.
 ## Task 1 — Packaging & install skeleton
 
 **Files:**
+
 - Modify: `pyproject.toml` (`[project.scripts]`)
 - Create: `src/gwlab/swift/stream/__init__.py`, `src/gwlab/swift/stream/serve_collector.py` (a `main()` stub that prints its config and exits 0 for now)
 - Create: `ansible/roles/gw-sec-collector/tasks/build.yml`, `.../install.yml`, `.../defaults/main.yml`
 
 **Interfaces:**
+
 - Produces: a `gwlab-collector` console entry point resolving to
   `gwlab.swift.stream.serve_collector:main`; an Ansible role that builds a wheel
   and installs it to `/opt/gwlab` with `/opt/gwlab/bin/gwlab-collector` on PATH.
@@ -126,10 +128,12 @@ Run: `vrg-container-run -- vrg-validate` (green), then `vrg-commit --type build 
 ## Task 2 — Client connectivity + first-lap measurement (de-risk)
 
 **Files:**
+
 - Create: `ansible/roles/gw-sec-collector/templates/collector-ccdt.json.j2`, `.../tasks/identity.yml`
 - Create: `epics/65-swift-settlement-tracking/assets/first-lap-measurement.md` (results)
 
 **Interfaces:**
+
 - Produces: a working client connection from `mon-probe` to the Native-HA QM over a
   monitoring `SVRCONN` + CCDT CONNAME list; a recorded first-lap-time number and
   the bindings escape-hatch decision.
@@ -167,12 +171,14 @@ Operational/measurement task — no TDD. De-risks design §11.1–§11.2.
 ## Task 3 — `browse_new` persistent cursor (port + fake + adapter)
 
 **Files:**
+
 - Modify: `src/gwlab/messaging.py` (Protocol)
 - Modify: `tests/gwlab/swift/fakes.py` (in-memory fake)
 - Modify: `src/gwlab/pymqi_messaging.py` (box-only adapter)
 - Test: `tests/gwlab/swift/stream/test_browse_new.py`
 
 **Interfaces:**
+
 - Produces: `Messaging.browse_new(queue: str) -> list[Message]` — first call returns
   every message from the first; each later call returns only messages that arrived
   since the previous call (persistent cursor; a browsed message is never returned
@@ -239,10 +245,12 @@ class FakeMessaging:
 ## Task 4 — `SettlementState` (incremental fold, retention, orphan-gating, aging)
 
 **Files:**
+
 - Create: `src/gwlab/swift/stream/state.py`
 - Test: `tests/gwlab/swift/stream/test_state.py`
 
 **Interfaces:**
+
 - Consumes: `model.SwiftMessage`, `lifecycle.fold`, `correlate.Correlated`,
   `window.in_window/_real_horizon`, `swiftconfig.Horizon`, `reference.State`.
 - Produces: `SettlementState` with
@@ -371,10 +379,12 @@ Implement `age`: for each entry, fold; if `current` is terminal
 ## Task 5 — `sweep()` (one round-robin ingest pass)
 
 **Files:**
+
 - Create: `src/gwlab/swift/stream/sweep.py`
 - Test: `tests/gwlab/swift/stream/test_sweep.py`
 
 **Interfaces:**
+
 - Consumes: `Messaging.browse_new`, `SettlementState`, `SwiftQueueSet`, `Horizon`,
   `collect._decode_and_parse`.
 - Produces: `sweep(messaging, state, queues, now, horizon) -> SweepResult` where
@@ -434,10 +444,12 @@ def sweep(messaging, state, queues, now, horizon):
 ## Task 6 — Snapshot + self-metrics + windowed outcome semantics
 
 **Files:**
+
 - Create: `src/gwlab/swift/stream/snapshot.py`, `src/gwlab/swift/stream/selfmetrics.py`
 - Test: `tests/gwlab/swift/stream/test_snapshot.py`, `.../test_selfmetrics.py`
 
 **Interfaces:**
+
 - Produces:
   - `SnapshotHolder` with `publish(text: str) -> None` and `latest() -> str`
     (atomic reference swap — a bare attribute assignment, GIL-atomic, no lock).
@@ -488,12 +500,14 @@ def test_render_collector_metrics_emits_series():
 ## Task 7 — Box-only serve loop + HTTP thread; `mon-probe` deployment
 
 **Files:**
+
 - Modify: `src/gwlab/swift/stream/serve_collector.py` (replace the Task 1 stub)
 - Modify: `pyproject.toml` (`[tool.coverage.run] omit` += `serve_collector.py`)
 - Create: `ansible/roles/gw-sec-collector/templates/gwlab-collector.service.j2`, `.../tasks/deploy.yml`
 - Modify: the Prometheus target file/role to add the fixed `mon-probe` scrape target
 
 **Interfaces:**
+
 - Consumes: `connect()` (pymqi), `sweep`, `SettlementState`, `SnapshotHolder`,
   `CollectorStats`, `render_exposition`/`render_collector_metrics`.
 - Produces: `main()` running the sweep loop in the main thread and an
@@ -527,7 +541,7 @@ def run(args):
   omitted, matching `serve_http.py`). **No other omit entries.**
 
 - [ ] **Step 3: systemd unit template** — `Restart=always`, `StartLimitIntervalSec`
-  + `StartLimitBurst` (fail-loud into `failed`), `ExecStart=/opt/gwlab/bin/gwlab-collector …`,
+  - `StartLimitBurst` (fail-loud into `failed`), `ExecStart=/opt/gwlab/bin/gwlab-collector …`,
   running as the monitoring user on `mon-probe`.
 
 - [ ] **Step 4: Prometheus target** — add the fixed `mon-probe:<port>` scrape target
@@ -541,6 +555,7 @@ def run(args):
 ## Task 8 — Validation & cutover (operational)
 
 **Files:**
+
 - Create: `epics/65-swift-settlement-tracking/assets/streaming-collector-validation.md`
 
 Operational validation — recorded as an `Outcome:` on the issue, no PR.
@@ -561,6 +576,7 @@ Operational validation — recorded as an `Outcome:` on the issue, no PR.
 ## Self-Review
 
 **Spec coverage** (design §-by-§ → task):
+
 - §2 decouple + maintain → T4/T5 (state, sweep) + T6 (snapshot). ✓
 - §4 one continuous sweep loop, order, zero-wait, `BROWSE_FIRST` restart → T3 (`browse_new`) + T5 (`sweep`). ✓
 - §5 incremental fold, correlation invariant (no buffer), lifecycle retention, window-gated orphan, aging → T4. ✓

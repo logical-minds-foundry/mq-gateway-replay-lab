@@ -186,7 +186,7 @@ least-privilege posture:
    qm_svc=SVCQM -e chl_to_app=SVCQM.NHAUAPP`. **Gotcha:** `--tags authz` skips the
    plays that normally supply `qm_app`/`qm_svc`/`chl_to_app`, so they must be
    passed as extra-vars. Result: accounts on all 6 HA+DR nodes; `CHLAUTH(ENABLED)`
-   + the three SSLPEERMAP maps + deny-all backstop; base grants.
+   - the three SSLPEERMAP maps + deny-all backstop; base grants.
 3. **Cert-DN pre-check (why no lockout):** every live client cert already carried
    the OU the map keys off — `app-client` = `O=app-org,OU=apps` → `mqapp`,
    `mq_prometheus` = `O=app-org,OU=ops` → `mqmon`, `svc-responder` = `O=svc-org` →

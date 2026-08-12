@@ -24,7 +24,7 @@ exits unless proven").
 
 ## 1. Origin — why this epic exists
 
-#105 asked whether MQ-native **COA** (Confirmation On Arrival) and **COD**
+Epic #105 asked whether MQ-native **COA** (Confirmation On Arrival) and **COD**
 (Confirmation On Delivery) reports could decompose the opaque
 `instructed → acknowledged` settlement leg into `ARRIVED` (message reached the
 counterparty's landing queue) and `DELIVERED` (destructively consumed by the
@@ -117,8 +117,8 @@ site**. An **instantaneous COA** provides exactly that: it rules the round-trip
 network and the counterparty's landing queue **in or out at a glance**, from data
 generated **at their site**. COD then marks destructive delivery. These two
 timestamps are, in the operator's words, priceless for the first-leg
-troubleshooting the streaming design otherwise leaves opaque — which is why the
-#105 NO-GO was a genuine loss worth revisiting.
+troubleshooting the streaming design otherwise leaves opaque — which is why
+the #105 NO-GO was a genuine loss worth revisiting.
 
 ## 5. Strategic payload — the capability, not the feature
 
@@ -257,15 +257,15 @@ costs. The framework must state them plainly:
 Verified via web search over the IBM pages (which 403 automated fetch — a human
 re-reads them before operational reliance):
 
-- Message exit: https://www.ibm.com/docs/en/ibm-mq/7.5.0?topic=programs-message-exit
+- Message exit: <https://www.ibm.com/docs/en/ibm-mq/7.5.0?topic=programs-message-exit>
 - Channel-exit programs for messaging channels:
-  https://www.ibm.com/docs/en/SSFKSJ_9.4.0/develop/q027990_.html
+  <https://www.ibm.com/docs/en/SSFKSJ_9.4.0/develop/q027990_.html>
 - MQXQH — transmission queue header:
-  https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=i-mqxqh-transmission-queue-header
+  <https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=i-mqxqh-transmission-queue-header>
 - Types of message (report messages, COA/COD, Feedback):
-  https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=messages-types-message
+  <https://www.ibm.com/docs/en/ibm-mq/9.2.x?topic=messages-types-message>
 - Field details for MQMD:
-  https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=descriptor-field-details-mqmd
-- IBM sample exits (starting point): https://github.com/ibm-messaging/mq-exits
+  <https://www.ibm.com/docs/en/ibm-mq/9.4.x?topic=descriptor-field-details-mqmd>
+- IBM sample exits (starting point): <https://github.com/ibm-messaging/mq-exits>
 - Prior findings in this repo: `docs/coa-cod-streaming-findings.md`,
   `docs/mqmd-streaming-fidelity.md`.

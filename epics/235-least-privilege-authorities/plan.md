@@ -1,7 +1,7 @@
 # Least-privilege MQ authority model — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
-
+>
 > **Revision (task #247).** Re-based to **mirror and reuse the base lab's defined
 > authorization model** (service accounts `mqapp`/`mqmon`/`mqsvc`, `CHLAUTH
 > SSLPEERMAP` identity maps, `setmqaut -g` group grants) instead of inventing
@@ -119,6 +119,7 @@ gw_sec_exporter_mon_pw: ""    # REQUIRED — the monitoring keystore password
 ```bash
 grep -rnE 'app.client|APP\.SVRCONN|app_client' ansible/roles/gw-sec-observability/
 ```
+
 Expected: no matches.
 
 - [ ] **Step 5: Validate** — `vrg-container-run -- vrg-validate` → PASS.
@@ -412,7 +413,7 @@ PR-workable; run with `issue-deploy`. Closes on `Outcome: SUCCESS`.
   `mqsvc` exist and `CHLAUTH(ENABLED)`. (2) apply our settlement plays from
   `site.yml` (`gw-sec-queues`, `gw-sec-svc-queues`, `gw-sec-observability`,
   `gw-sec-collector`) with the identity/keystore inputs. The roles' declare-and-verify
-  + `dspmqaut` assertions gate the apply.
+  - `dspmqaut` assertions gate the apply.
 - **Acceptance:** both applies complete green; `dspmqaut` shows the intended grants;
   the channels resolve to `mqapp`/`mqmon` (not `mqm`); exporter + collector run as `mqmon`.
 
@@ -448,6 +449,7 @@ Not PR-workable; run with `issue-validate`. Closes on `Outcome: SUCCESS`.
 ## Self-Review
 
 **Spec coverage:**
+
 - Spec §6.0 (establish Stage 2) → Operational Task A prerequisite.
 - Spec §2/§6.1–.2 (mqmon observer; collector wiring) → Tasks 1, 2.
 - Spec §5 grant table → Task 3 (mqmon/mqapp) + Task 4 (mqsvc/responder).
