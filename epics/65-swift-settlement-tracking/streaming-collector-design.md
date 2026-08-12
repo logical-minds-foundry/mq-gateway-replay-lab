@@ -39,7 +39,7 @@ Linear, ~1,400 msg/s. Two consequences:
 
 A profile of one 100k pass shows exactly where the time goes:
 
-```
+```text
 IO      browse : 65.04 s   650.4 us/msg   97.4%
 COMPUTE parse  :  1.41 s    14.1 us/msg    2.1%
 COMPUTE fold   :  0.35 s     3.5 us/msg    0.5%
@@ -76,7 +76,7 @@ Together these turn an O(N)-per-scrape batch job into an O(Δ)-per-cycle service
 
 ## 3. Architecture — a long-running service, four concerns
 
-```
+```text
                       ┌──────────────────────────────────────────┐
    GW.SEC.*.AUDIT ───▶│  ingest (1 thread)   state (in-memory)    │
    (2 queues now,     │  one sweep loop:     dict[SEME → State]    │

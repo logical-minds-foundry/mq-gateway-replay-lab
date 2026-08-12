@@ -26,11 +26,13 @@
 ### Task 0: Repo bootstrap
 
 **Files:**
+
 - Create: `pyproject.toml`, `vergil.toml`, `README.md`, `LICENSE`, `.gitignore`, `VERSION`
 - Create: `src/rrecon/__init__.py`
 - Create: `tests/test_smoke.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces: an importable `rrecon` package; a green `vrg-validate` baseline.
 
@@ -77,10 +79,12 @@ git commit -m "chore(bootstrap): rrecon package skeleton + validating baseline"
 ### Task 1: The record and the Browser port
 
 **Files:**
+
 - Create: `src/rrecon/records.py`
 - Test: `tests/test_records.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces:
   - `ArchivedRecord(msg_id: bytes, correl_id: bytes, put_time: datetime | None, body: bytes)` — frozen dataclass.
@@ -154,10 +158,12 @@ git commit -m "feat(records): ArchivedRecord + Browser port"
 ### Task 2: In-memory fake Browser
 
 **Files:**
+
 - Create: `src/rrecon/fake.py`
 - Test: `tests/test_fake.py`
 
 **Interfaces:**
+
 - Consumes: `ArchivedRecord` (Task 1).
 - Produces: `FakeBrowser` with `seed(queue: str, records: list[ArchivedRecord]) -> None` and `browse(queue: str) -> list[ArchivedRecord]` (satisfies `Browser`).
 
@@ -229,10 +235,12 @@ git commit -m "feat(fake): in-memory Browser for tests and examples"
 ### Task 3: Config surface
 
 **Files:**
+
 - Create: `src/rrecon/config.py`
 - Test: `tests/test_config.py`
 
 **Interfaces:**
+
 - Consumes: nothing.
 - Produces:
   - `ArchivePair(request_archive: str, reply_archive: str)`
@@ -382,10 +390,12 @@ git commit -m "feat(config): ArchivePair, Correlation, Window, ReconConfig, MQCo
 ### Task 4: The reconcile core
 
 **Files:**
+
 - Create: `src/rrecon/core.py`
 - Test: `tests/test_core.py`
 
 **Interfaces:**
+
 - Consumes: `Browser` (Task 1), `ArchivePair`/`Correlation`/`Window` (Task 3).
 - Produces:
   - `Outstanding(msg_id: bytes, put_time: datetime, age: timedelta)`
@@ -575,10 +585,12 @@ git commit -m "feat(core): request-cohort reconcile — counts, latency, outstan
 ### Task 5: Prometheus exporter
 
 **Files:**
+
 - Create: `src/rrecon/exporter.py`
 - Test: `tests/test_exporter.py`
 
 **Interfaces:**
+
 - Consumes: `reconcile`/`Reconciliation` (Task 4), `ReconConfig` (Task 3), `Browser` (Task 1).
 - Produces: `render(browser: Browser, config: ReconConfig, now: datetime, timer: Callable[[], float] = perf_counter, top_n: int = 200) -> str`.
 
@@ -732,10 +744,12 @@ git commit -m "feat(exporter): Prometheus exposition — gauges, top-N detail, o
 ### Task 6: pymqi MQ adapter (browse-only)
 
 **Files:**
+
 - Create: `src/rrecon/mq.py`
 - Test: `tests/test_mq_mapping.py`
 
 **Interfaces:**
+
 - Consumes: `ArchivedRecord` (Task 1), `MQConnection`/`TLSConfig` (Task 3).
 - Produces: `MQBrowser(connection: MQConnection)` satisfying `Browser` (`browse(queue) -> list[ArchivedRecord]`); module-level `put_time_from_mqmd(md) -> datetime | None` (unit-testable without pymqi).
 
@@ -868,10 +882,12 @@ git commit -m "feat(mq): browse-only pymqi adapter + MQMD put-time mapping"
 ### Task 7: Cached HTTP serve
 
 **Files:**
+
 - Create: `src/rrecon/exporter_server.py`
 - Test: `tests/test_serve_cache.py`
 
 **Interfaces:**
+
 - Consumes: `render` (Task 5), `ReconConfig` (Task 3), `Browser` (Task 1).
 - Produces: `ScanCache(browser, config, top_n=200)` with `def refresh(self, now: datetime) -> None` and `def exposition(self, now: datetime) -> str` (returns cached text plus a `{prefix}scan_age_seconds{stream}` line computed from `now - last_scan_time`); `def verify_archives(browser, pair) -> None` (fails loud if either queue is unbrowsable); `serve(connection, config, port, scan_interval=60, top_n=200) -> None` wiring an `MQBrowser`, a background refresh loop, and an `HTTPServer`.
 
@@ -1043,10 +1059,12 @@ git commit -m "feat(serve): cached exposition, scan-interval loop, scan-age, dec
 ### Task 8: Dashboard generator
 
 **Files:**
+
 - Create: `src/rrecon/dashboard.py`
 - Test: `tests/test_dashboard.py`
 
 **Interfaces:**
+
 - Consumes: nothing (emits queries by prefix/stream).
 - Produces: `build_dashboard(qmgr: str, stream: str, prefix: str = "rr_") -> dict` — a Grafana dashboard JSON dict with KPI tiles (requests/replied/outstanding/latency), a backlog timeseries, a scan-cost timeseries, and an outstanding table, all with generic titles and `qmgr` parameterized into panel targets.
 
@@ -1146,10 +1164,12 @@ git commit -m "feat(dashboard): generic Grafana board generator"
 ### Task 9: CLI
 
 **Files:**
+
 - Create: `src/rrecon/cli.py`
 - Test: `tests/test_cli.py`
 
 **Interfaces:**
+
 - Consumes: `build_dashboard` (Task 8), `render` (Task 5), `ReconConfig`/`ArchivePair`/`Correlation`/`Window`/`MQConnection`/`TLSConfig` (Task 3), `MQBrowser` (Task 6), `serve` (Task 7).
 - Produces: `build_parser() -> argparse.ArgumentParser`; `parse_thresholds(spec: str) -> list[tuple[str, int]]`; `main(argv: Sequence[str] | None = None) -> int` with subcommands `render` / `serve` / `dashboard`.
 
@@ -1327,11 +1347,13 @@ git commit -m "feat(cli): render / serve / dashboard subcommands"
 ### Task 10: Order-fulfillment example + end-to-end test
 
 **Files:**
+
 - Create: `examples/order-fulfillment/scenario.py`
 - Create: `examples/order-fulfillment/README.md`
 - Test: `tests/test_example_order_fulfillment.py`
 
 **Interfaces:**
+
 - Consumes: `FakeBrowser` (Task 2), `render` (Task 5), `reconcile` (Task 4), config types (Task 3).
 - Produces: `build_scenario(now) -> tuple[FakeBrowser, ReconConfig]` seeding `ORD.REQ.ARCHIVE` / `ORD.RPY.ARCHIVE` with order requests and warehouse confirmations, with a contiguous **outage window** of unconfirmed orders; `main() -> None` printing the exposition and the outstanding table.
 
@@ -1435,6 +1457,7 @@ git commit -m "feat(example): order-fulfillment walkthrough + end-to-end outage 
 ## Self-Review
 
 **Spec coverage:**
+
 - §3 repo shape → Task 0 (bootstrap, `vergil.toml` no `[vm]`, coverage omit).
 - §4 record + Browser → Task 1; correlation/window → Task 3; reconcile (cohort window, latency earliest-wins, scanned_headers pre-filter, fail-loud, future-reply ignored) → Task 4.
 - §5 config + MQ adapter (browse-only, TLS) + CLI → Tasks 3, 6, 9; declare-and-verify → Task 7.

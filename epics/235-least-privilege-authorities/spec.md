@@ -108,7 +108,7 @@ there is **no distinct `mon-client` cert** — that name was only a placeholder.
 
 ## 4. The topology the model must fit
 
-```
+```text
                  application (APP.SVRCONN → mqapp)
                    │  MQPUT                         ▲  MQGET
                    ▼                                │
@@ -242,7 +242,7 @@ is present on `NHAUAPP`: `mqapp`/`mqmon`/`mqsvc` exist, `CHLAUTH(ENABLED)`, and 
 channels resolve to the non-privileged accounts (`DISPLAY CHLAUTH` / `DISPLAY
 CHSTATUS … MCAUSER` shows `mqapp`/`mqmon`, **not** `mqm`). If any channel still
 resolves to `mqm`, comment "blocked: preconditions not met — Stage 2 absent;
-<channel> resolves to mqm" and **stop** — never fabricate a pass.
+`<channel>` resolves to mqm" and **stop** — never fabricate a pass.
 
 With the precondition met:
 

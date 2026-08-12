@@ -30,7 +30,7 @@ and routes replies back — and then answer the questions that only volume expos
 
 ## 2. Architecture — three moving parts, one real round-trip
 
-```
+```text
 GATEWAY REQUESTER (our app-simulator, our QM side)          SVC RESPONDER (counterparty-sim, SVCQM side)
   ├─ generate N instructions (MT540-543) via the generator    ├─ drain instructions off the SVCQM landing queue
   ├─ PUT → GW.SEC.INSTRUCT (alias)                             ├─ read the embedded DIRECTIVE
@@ -128,7 +128,7 @@ metadata region the collector never reads (its correlation keys are `SEME`/`RELA
 only, so anything else is inert junk from the collector's view). The directive
 encodes:
 
-```
+```text
 directive = (outcome, delay_vector)
   outcome      ∈ { clean, reject(reason), fail(reason) }
   delay_vector = per-stage sim-time delays [ Δ_ack, Δ_match, Δ_settle ]

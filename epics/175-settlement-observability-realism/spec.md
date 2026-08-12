@@ -59,7 +59,8 @@ Two principles drive the design:
 
 ## 3. Goals / non-goals
 
-**Goals**
+### Goals
+
 - A calibrated, realistic steady-state traffic baseline, sourced from published
   industry failure rates.
 - Seven named, deterministic, reproducible failure episodes.
@@ -71,7 +72,8 @@ Two principles drive the design:
 - A reusable observability-primitives reference.
 - A committed calibration reference doc (sourced research, data-vs-judgment separated).
 
-**Non-goals**
+### Non-goals
+
 - **No per-counterparty and no per-instrument (ISIN) segmentation or metrics** — the
   minimal-footprint invariant (§4). Correlation references (`:20C::SEME`/`RELA`) are
   used only as the join key, never as an analytic dimension.
@@ -121,6 +123,7 @@ deliverable before Phase 2 begins:
 ## 6. Design — eight units
 
 ### Unit 1 — Calibrated traffic generator
+
 *Extends `src/gwlab/swift/generator.py`, `directive.py`, `corpus.py`.*
 
 Introduce **asset-class books** — `equity`, `govvie`, `etf` — each emitting at its own
@@ -131,6 +134,7 @@ wall-clock/`random` in the committed path). Asset class is a generation-side con
 only — it shapes the aggregate realism; it is not carried as a collector dimension.
 
 ### Unit 2 — Scenario injection harness
+
 *New: `src/gwlab/swift/scenarios.py`.*
 
 A library of the seven named episodes (§7). Each is a pure, parameterized function
@@ -141,6 +145,7 @@ deterministic and composable. Each declares its **isolating macro dimension** an
 **expected signature**, which the catalog and tests assert against.
 
 ### Unit 3 — Collector anomaly scoring
+
 *New: `src/gwlab/swift/stream/anomaly.py`; extends `stream/state.py`.*
 
 `SettlementState` already folds each instruction incrementally. Add **macro-segment
@@ -164,9 +169,11 @@ Binomial-z catches the spikes (scenarios 1–6); the EWMA residual catches the s
 dimension).
 
 ### Unit 4 — Segmented metrics exposition
+
 *Extends `src/gwlab/swift/exposition.py` / `observe.py` / `stream/selfmetrics.py`.*
 
 Expose:
+
 - **Segmented state counters** with bounded macro labels:
   `swift_settlement_state_total{state,reason_family,msg_type}`.
 - **Deviation/anomaly metrics** per macro segment:
@@ -176,6 +183,7 @@ Expose:
 - **Audit-queue infra metrics** (Unit 8).
 
 ### Unit 5 — Dashboard rework (three registers)
+
 *Rewrites `src/gwlab/swift/board.py`; deploys via `gw-sec-observability` role.*
 
 Retire the settled-dominated bar chart. Three registers on one board:
@@ -192,6 +200,7 @@ Retire the settled-dominated bar chart. Three registers on one board:
   the metadata (Unit 8).
 
 ### Unit 6 — Scenario catalog + snapshot capture
+
 *New: a scenario runner script + `docs/` catalog output.*
 
 A runner that, per scenario: seeds the realistic baseline → injects the episode
@@ -207,6 +216,7 @@ a committed **7-snapshot catalog** + index — the demo artifact and the epic's 
 acceptance evidence.
 
 ### Unit 7 — Reusable observability-primitives note
+
 *New: a short `docs/` reference.*
 
 Extract the generalizable pattern: *incidents are concentrations; detect
@@ -215,6 +225,7 @@ volume; keep the metric surface macro and non-sensitive; the macro signal points
 where the full-detail system does the drill-down.* Written for reuse across the family.
 
 ### Unit 8 — Audit-queue data-store health
+
 *Extends `stream/sweep.py` (MQINQ read) + `stream/selfmetrics.py`; `gw-sec-observability`
 role for exporter config.*
 
@@ -311,14 +322,14 @@ Data separated from judgment; URLs preserved for verification. Primary sources:
 
 - **ESMA Report on shortening the settlement cycle (T+1), Nov 2024** — per-asset-class
   fail rates (7.14% EEA all-asset; sovereign ~2%; ETF 17–20%):
-  https://www.esma.europa.eu/sites/default/files/2024-11/ESMA74-2119945925-1969_Report_on_shortening_settlement_cycle.pdf
+  <https://www.esma.europa.eu/sites/default/files/2024-11/ESMA74-2119945925-1969_Report_on_shortening_settlement_cycle.pdf>
 - **SIFMA/ICI/DTCC T+1 After-Action Report** — US equity CNS fail 2.12% / non-CNS
   3.31%; affirmation 73%→~95%:
-  https://www.sifma.org/news/press-releases/sifma-ici-and-dtcc-release-t1-after-action-report-industry-coordination-led-to-successful-transition-reducing-risk-and-costs-in-the-system
+  <https://www.sifma.org/news/press-releases/sifma-ici-and-dtcc-release-t1-after-action-report-industry-coordination-led-to-successful-transition-reducing-risk-and-costs-in-the-system>
 - **ICMA ERCC "Optimising settlement efficiency"** — 27% of fails matching-rooted:
-  https://www.icmagroup.org/assets/Uploads/ERCC-discussion-paper-on-settlement-efficiency.pdf
+  <https://www.icmagroup.org/assets/Uploads/ERCC-discussion-paper-on-settlement-efficiency.pdf>
 - **iotafinance MT548** — reason-code catalog (`LACK`/`CLAC`/`CMON`; `Dxxx`; `NARR`):
-  https://www.iotafinance.com/en/SWIFT-ISO15022-Message-type-MT548.html
+  <https://www.iotafinance.com/en/SWIFT-ISO15022-Message-type-MT548.html>
 
 **Honesty caveats:** ESMA changed measurement methodology in 2022 → cite *trends* over
 *absolute levels*; the **rejection rate is judgment-only** (no public figure exists);

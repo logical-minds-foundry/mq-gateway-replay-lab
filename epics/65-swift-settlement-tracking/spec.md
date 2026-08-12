@@ -112,7 +112,7 @@ instruction **settled** — and the specific number is retained for display only
 
 Six named states: four progressive, two terminal-negative.
 
-```
+```text
 INSTRUCTED ──▶ ACKNOWLEDGED ──▶ MATCHED ──▶ SETTLED         (lifecycle complete, positive)
      │              │              │
      └──────────────┴──────────────┴──▶ REJECTED / FAILED    (lifecycle complete, negative)
@@ -247,7 +247,7 @@ follows *our* instruction through *its* lifecycle via the reference echo.
 A new subpackage; **v1 modules are not touched.** Data-driven spine (declarative
 tokenizer + tables/catalogs).
 
-```
+```text
 gwlab/swift/
   tokenizer.py     SWIFT envelope + block-4 parser: reads the MT number from
                    Block 2, then tokenizes block 4 → uniform field tree
@@ -307,7 +307,7 @@ without collision (specified in the plan's deploy task).
 
 ## 8. Data flow
 
-```
+```text
 instruction (MT541 …) ─put─▶ GW.SEC.INSTRUCT.AUDIT (retained) ─stream─▶ counterparty
                                                                             │
 over the settlement cycle (T … T+2) the counterparty emits, e.g.:

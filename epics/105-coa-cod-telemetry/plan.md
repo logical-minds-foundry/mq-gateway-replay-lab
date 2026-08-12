@@ -13,15 +13,19 @@
 ## Deliverable tasks
 
 ### Task A — COA/COD ⊥ streaming (issue #163) — DONE
+
 `docs/coa-cod-streaming-findings.md`. The gating-spike write-up: the two showstoppers (streaming strips the report options; the single `ReplyToQ` is shared with SWIFT response routing) and the definitive no-go. Cited. This is the epic's origin finding.
 
 ### Task B — MQMD original-vs-streamed fidelity deep-dive (issue #172) — DONE (empirical rows pending)
+
 `docs/mqmd-streaming-fidelity.md`. Every MQMD field + message properties, each with copied/altered/reset/uncertain status, cited evidence, and a counterparty-risk rating. Flagship deliverable.
 
 ### Task C — Strategic risk register (issue #180) — DONE
+
 `docs/gateway-design-risk-register.md`. Living register synthesized from A and B: per-risk description / what-to-test / why-it-matters / severity / status. Seeded with R1 (CAPEXPRY expiry), R2 (origin-context re-stamping), R3 (UserIdentifier), R4 (groups), R5 (MQRFH2 properties), R6 (COA/COD stripping), R7 (shared ReplyToQ).
 
 ### Task D — Spec/plan repurpose (issue #179) — this task
+
 Rewrite `spec.md`/`plan.md` from the COA/COD implementation to this risk-audit mission, preserving the COA/COD origin as history.
 
 ## The one empirical validation (issue #108, repurposed)
