@@ -75,7 +75,7 @@ Everything below is an elaboration of that one sentence.
 
 ---
 
-## 4. The four arguments
+## 4. The arguments
 
 Each is to be evidenced in the deliverables, not merely asserted.
 
@@ -394,7 +394,26 @@ Single-threading therefore rests on statelessness and simplicity, which stand
 on their own — and the receiver's obligation is to **tolerate arbitrary advice
 order**, which §5.3 requires of it.
 
-- Connect once; open `GW.SEC.REPLY` once; hold both for the process lifetime.
+- **Startup order: connect inward first, to the receiving application, and only
+  then to the queue manager.** This is deliberate and it is what prevents the
+  partial-failure deadlock described in §5.6. There is no point holding the
+  reply queue if the messages cannot be forwarded, so an instance that cannot
+  reach the application must **never open the queue at all** — it retries
+  inward, loudly, and does not become a contender. Failing to reach the
+  application is a configuration fault, and it must be reported with enough
+  detail to identify the cause rather than merely logged.
+- Then connect to the queue manager and open `GW.SEC.REPLY` **once, with
+  `MQOO_INPUT_EXCLUSIVE`** (§5.6), holding both for the process lifetime.
+  The option is stated explicitly because `MQOO_INPUT_AS_Q_DEF` resolves via
+  the queue's `DEFSOPT` — leaving it unspecified is not neutral, it is
+  environment-dependent.
+- **If the inward connection is lost and cannot be re-established within a
+  bounded window, abort the process.** Aborting frees the queue handle, so a
+  standby — already connected inward and blocked on 2042 — takes over. The
+  window matters: aborting on the first dropped packet would turn a two-second
+  application hiccup into a failover costing the `HBINT`-bounded handle release
+  (§5.6), which is worse than waiting. Set it longer than a plausible transient
+  and well below the tolerable stall; L11 quantifies both ends.
 - `MQGET` under syncpoint, with a wait interval — held open in a loop, not
   polled.
 - Translate and deliver downstream.
@@ -646,6 +665,59 @@ Both are tunable, and §9 measures the real figure rather than asserting one.
 Given the settlement lifecycle runs in minutes to days (§5.2), a failover
 measured in minutes is very likely acceptable — but that should be a *measured
 conclusion*, not an assumption.
+
+#### The partial-failure case, and why startup order solves it
+
+The obvious hole in a lock-based standby design is an instance that is **alive
+but useless**: it can reach the queue manager but not the receiving
+application. Holding the handle, forwarding nothing, blocking a healthy
+standby. Process death is the liveness signal, and this failure produces none.
+
+**Startup order closes it** (§5.2). An instance connects *inward first*. If it
+cannot reach the application it never opens the queue, so it never becomes a
+contender — the broken instance is excluded before it can acquire anything. And
+if the inward connection is lost at runtime and cannot be recovered within a
+bounded window, the instance **aborts**, which frees the handle through the
+same mechanism takeover already relies on.
+
+No new machinery, no relinquish-and-recontend state, no liveness protocol. The
+rule is simply: **cannot forward ⇒ not running.**
+
+Two consequences worth stating rather than discovering:
+
+- **Standbys hold an inward connection while idle.** They are connected to the
+  application and blocked on 2042, so the application sees N connections of
+  which one is active. That is an obligation on the receiving side and it
+  should be agreed, not assumed.
+- **If no instance can reach the application, nothing runs** — and that is
+  correct. It is a loud, unambiguous configuration failure rather than a queue
+  quietly failing to drain.
+
+#### Observability — three failure states look identical from outside
+
+These components must be monitored like anything else in the environment, and
+that is not a platitude here: **from the outside, "not consuming" has at least
+three distinct causes**, and a healthy standby is *supposed* to look idle. So
+idleness cannot be the alarm.
+
+Each instance therefore exports an explicit state:
+
+| State | Meaning | Alarm? |
+|---|---|---|
+| `CONNECTING_APP` | Cannot reach the receiving application; retrying inward | **Yes** — configuration fault, and this instance is not a contender |
+| `STANDBY` | Connected inward, holding 2042, waiting for the queue | No — this is health |
+| `ACTIVE` | Holds the queue, consuming and forwarding | No |
+| `FAILED` | Aborting or aborted | **Yes** |
+
+The alarms that matter follow directly: **no instance in `ACTIVE`** (the reply
+path is stalled), **fewer standbys than expected** (redundancy silently
+degraded — the failure that hides until the day it matters), and **any
+instance in `CONNECTING_APP`** (a route or configuration problem). Reply-queue
+depth is a useful corroborating signal but a poor primary one, since depth also
+grows legitimately.
+
+This fits the existing observability tier rather than adding a new one — the
+repo already exports collector state to Prometheus and boards it in Grafana.
 
 #### The mechanism generalises — which makes the parallelism argument moot
 
@@ -910,6 +982,14 @@ changes. **C** = the component repo, **L** = this lab repo.
   failover. Process-level in the lab, since the inventory has no dedicated
   gateway hosts — a faithful demonstration, because the queue manager
   arbitrates by connection rather than by host (§5.6).
+- **L14 — Gateway observability.** Export the §5.6 state model
+  (`CONNECTING_APP` / `STANDBY` / `ACTIVE` / `FAILED`) plus the alarms that
+  follow from it: no instance active, fewer standbys than expected, any
+  instance unable to reach the receiving application. Fits the existing
+  Prometheus/Grafana tier rather than adding one. Without this the HA design is
+  unobservable — a healthy standby and a stuck instance are indistinguishable
+  from outside, and silently degraded redundancy is the failure that hides
+  until the day it matters.
 
 **L1, L2 and L5 require the tokenizer and generator to handle envelope-level
 structure** (block 5 trailers, `23G`), which today handle block 4 only. That
@@ -988,6 +1068,15 @@ behaviour recorded — including the uncomfortable ones, such as O4.
   numbers — this is the headline availability figure of the whole design, and
   the one thing that turns "it fails over automatically" into a claim with a
   unit attached.
+- **Severed inward route (the partial-failure case, §5.6).** With an active
+  instance running, break *only* its route to the receiving application while
+  leaving its queue-manager connection healthy. Required observation: it
+  reports the fault, exhausts its bounded reconnect window, aborts, and a
+  standby takes over. This is a **stronger test than killing the process**,
+  because process death is the easy case — this is the one the design was
+  specifically shaped to survive.
+- **Start with the inward route already broken.** Confirm the instance never
+  opens the queue, reports `CONNECTING_APP`, and does not become a contender.
 - **Restart-into-2042.** Kill the *only* instance and restart it immediately;
   confirm it hits 2042 and recovers by retry rather than dying. This is the
   case every exclusive-open application must handle regardless of HA, and it
