@@ -170,6 +170,44 @@ Conceding the outbound point is what makes the inbound critique credible.
 "Wrong about both" invites dismissal as pedantry; "wrong about one, and that
 one is losing you messages" does not.
 
+### 4.5 The inbound symmetry — poison handling is state management too
+
+The outbound argument says the **sender** owns retry state. The inbound
+argument is its mirror image, and it lands on the same principle:
+
+> The sender owns retry state. The receiver owns invalid-message state.
+> **The gateway owns neither.**
+
+A poison message is a permanent failure whose permanence depends on the message
+itself. Determining that requires **parsing** the message — and the gateway is
+content-opaque by design (§5.2). It therefore *cannot* make the determination,
+and should not be handed the consequences of one.
+
+The alternative design is worse than it looks. If the receiving application is
+permitted to refuse a message it could not parse, the gateway must back out;
+repeated backouts require a threshold; the threshold requires a backout queue;
+and the backout queue requires **another component to consume it** — a second
+gateway, with its own connection, its own error handling, and its own view of
+what is outstanding. That is a third stateful thing in the layer this epic
+argues must contain none.
+
+So the receiving application accepts the message, records it as invalid, and
+acknowledges (§5.3). Custody transfers; the lifecycle continues; no queue
+backs up; no component is added.
+
+**The strong form of the claim** — to be established by the `MQGET`
+failure-mode analysis (§8) rather than assumed: for a *content-opaque*
+consumer, there may be **no content-dependent permanent `MQGET` failure at
+all**. The two obvious candidates both dissolve on inspection: 2080 completes
+with `MQCC_WARNING`, leaves the message queued and hands back the length
+needed; 2110/2119 also complete with `MQCC_WARNING` and return the data
+*unconverted* — and a content-opaque gateway never requests conversion, so they
+cannot arise. MQ's semantics return the message rather than withholding it.
+
+If the analysis holds, the poison-message facility is not merely unnecessary
+here — it is unreachable by construction, which is a far stronger thing to be
+able to say.
+
 ---
 
 ## 5. Architecture
@@ -208,6 +246,22 @@ it. Trivial is not the same as vague:
   acknowledgement is what gates the `MQCMIT` in §5.2. If the ack semantics are
   mushy, the inbound argument is mushy.
 
+**The acknowledgement means "I have durably taken custody" — not "I processed
+this successfully."** This is load-bearing, not pedantry. The receiving
+application is contractually **forbidden from refusing a message it actually
+received**; an unparseable message is accepted, recorded as invalid, and
+acknowledged (§5.3). If the ack were allowed to mean "processed successfully",
+a well-meaning implementer would nack on a parse failure and every
+poison-message problem walks back in through the front door — see §4.5.
+
+**Maximum frame size must be ≥ the queue's `MAXMSGL`**, declared and verified
+rather than assumed. If the frame ceiling sat below `MAXMSGL`, messages between
+the two limits would be undeliverable forever and the receiving application
+would never see them — a poison class manufactured by the one layer that is
+supposed to create none. In practice this is comfortable: SWIFT FIN caps
+message text around 10 KB against an MQ default `MAXMSGL` of 4 MB, so this is a
+declare-and-verify assertion, not defensive code.
+
 Anything beyond that is out of scope, and its absence is the point.
 
 ### 5.1 Outbound gateway
@@ -238,14 +292,31 @@ on.
 - `MQGET` under syncpoint, with a wait interval — held open in a loop, not
   polled.
 - Translate and deliver downstream.
+- **Content-opaque.** The gateway never parses, inspects or converts the
+  message body, and never sets `MQGMO_CONVERT`. The payload is an opaque blob
+  of bits moved from the queue into a frame. This is not laziness — it is what
+  makes the gateway structurally incapable of creating a poison message, and it
+  eliminates the `MQRC_FORMAT_ERROR` / `MQRC_NOT_CONVERTED` class outright by
+  never requesting the conversion that produces it.
 - **Commit the GET only on positive acknowledgement from the receiving
-  application.** Back out on any failure, and the message is still there.
-- **Poison-message handling via `BOTHRESH` / `BOQNAME`.** A message that can
-  never be processed will otherwise be re-got forever; on an *ordered* queue
-  that is head-of-line blocking, and the settlement flow stops outright. After
-  the backout threshold the message is requeued to the backout queue and the
-  loop proceeds. This is a deliberate, visible break in ordering and **must**
-  alert.
+  application** (custody transfer, §5.0).
+- **Exactly one condition causes a backout: the receiving application is
+  unreachable or does not answer.** Nothing else does. On that condition, back
+  out **and halt the consumer**, reconnecting with backoff before getting
+  again — an outage then costs one backout, not thousands. Backing out in a
+  tight loop would spin `BackoutCount` up in seconds, and `BackoutCount` cannot
+  distinguish "downstream rejected this message" from "downstream is down."
+- **Handle `MQRC_TRUNCATED_MSG_FAILED` (2080) correctly**: it completes with
+  `MQCC_WARNING`, leaves the message on the queue, and returns `DataLength` set
+  to the untruncated length. Resize and re-get. Deterministic, one retry, no
+  guessing — a programming fault if unhandled, not a poison message.
+- **No `BOTHRESH`, no `BOQNAME`, no error queue** — see §4.5. Where an
+  architectural assumption is nonetheless violated, **halt and alert; never
+  divert.** On an ordered queue, stopping is *more* correct than skipping: a
+  settlement flow that silently continues past something it could not handle is
+  worse than one that stops loudly. That yields the operational signal a
+  dead-letter queue would have given, without the second component and the
+  state it would carry.
 
 This path is stateless because **MQ holds the state**. The message's presence
 on the queue *is* the record that it has not yet been accepted downstream.
@@ -262,6 +333,11 @@ straightforward.
 - Must be **idempotent** on redelivery, deduplicating on SEME/RELA. This
   requirement is pushed onto it by the stateless inbound design, and is cheap
   precisely because it already holds the state.
+- **Must never refuse a message on content grounds.** An unparseable or
+  corrupt message is accepted, recorded durably as invalid, and acknowledged.
+  Refusing it would force a backout, which forces a threshold, which forces a
+  backout queue, which forces another consumer — see §4.5. Recording invalid
+  messages is invalid-message *state*, and state is this component's job.
 
 Storage is deliberately simple and embedded. Production-grade database
 resiliency is a solved problem owned elsewhere and is explicitly not
@@ -278,6 +354,45 @@ live.
 Sequenced last. If the epic runs short of time this is the piece to defer, as
 the argument stands without it; it converts the argument from persuasive to
 demonstrated.
+
+### 5.5 Where the code lives — two repositories
+
+The C++ components are **not** built inside this repository. They are factored
+into a new private repo, **`mq-protocol-gateway`**, built to full Vergil
+standards. The reasoning is not only about tooling:
+
+- This repo is Python and Ansible, and its pipeline is Python-shaped: `ruff`,
+  `mypy`, `ty`, and `pytest --cov-branch --cov-fail-under=100` over `src/`.
+  C++ sources placed here would be **invisible to every gate** — not exempted,
+  simply unmeasured — silently falsifying the repo's documented zero-exemption
+  coverage claim.
+- Vergil ships first-class C++ support: CMake, `clang-format --dry-run
+  --Werror`, `run-clang-tidy` over a compile database, `cppcheck`, an
+  out-of-tree ASan/UBSan build deliberately kept from sharing object files with
+  the coverage build, and a compiler-family × version matrix (`clang-…` /
+  `gcc-…` tags on `[ci].versions`).
+- **The standard is part of the argument.** "Here is a gateway that is
+  clang-tidy clean, cppcheck clean, sanitiser clean and covered" is a stronger
+  claim than correct MQI calls alone — sanitiser-clean especially, set against
+  a codebase that opens objects per message.
+- It follows the lab methodology: build ad hoc, find the shape, then factor the
+  proven component into something separately tested and separately installable.
+  A gateway that exists only inside a lab repo is a demo; a standalone tested
+  component is something the team could actually adopt.
+
+Ownership boundary:
+
+| Repository | Holds |
+|---|---|
+| `mq-protocol-gateway` (new, private) | The C++ outbound and inbound gateways, the §5.0 wire protocol, the §5.4 counter-example, and their full build / test / lint / sanitiser pipeline |
+| this repo | The reference sending application, the failure-envelope evidence, the API findings, the argument, the duplicate-handling reference, and the lab deployment that installs the built binaries |
+
+Tasks in the component repo link under this epic and are closed by PRs in that
+repo, satisfying the placement law. **The zero-exemption coverage invariant
+then holds in both repositories** rather than being quietly abandoned in one.
+
+The same toolchain unlocks **#228** (MQ message-exit capability), which needs
+exactly this C++ build-and-test capability and is currently blocked without it.
 
 ---
 
@@ -318,7 +433,8 @@ which `PDE` does.
 |---|---|---|---|
 | I1 | Gateway dies after GET, before downstream delivery | Uncommitted GET backs out | Automatic — message still queued |
 | I2 | Delivered, acknowledgement lost, GET backed out | Duplicate delivery downstream | Receiving app deduplicates on SEME/RELA |
-| I3 | Downstream rejects; message unprocessable | Repeated backout | `BOTHRESH` → `BOQNAME`; alert; ordering break visible |
+| I3 | Message unparseable by the receiving application | None — it is accepted and acknowledged | Receiver records it as invalid (§5.3); lifecycle continues; no backout, no queue growth |
+| I3b | Receiving application unreachable | Backout; consumer halts | Circuit-break with backoff; one backout per outage, not per spin |
 | I4 | Acknowledged, `MQCMIT` interrupted — 2549 | Possible redelivery | Same as I2 — receiving app deduplicates |
 
 Inbound recovery requires no gateway state at all: MQ's own transactionality
@@ -365,18 +481,40 @@ classes. This spec does not assert it of C++.
 
 ## 8. Deliverables
 
-1. **Outbound gateway** (C++) — §5.1.
-2. **Inbound gateway** (C++) — §5.2, including poison-message handling.
-3. **Reference sending application** — §5.3, with SEME-preserving `PDE` retry.
-4. **Failure-envelope document** — §6, with each window demonstrated live.
-5. **API findings** — Q1 and Q2 answered empirically, with the XMS adoption
-   note.
-6. **The argument document** — the reader-facing writeup carrying §3 and §4.
-7. **Duplicate-handling reference** — extending
-   `docs/swift-settlement-reference.md`, which covers none of this today.
-8. **Counter-example** (§5.4) — deferrable.
+In **`mq-protocol-gateway`** (new, private):
 
-Deliverables 3, 4 and 7 require the tokenizer and generator to handle
+1. **Repository bootstrap** — Vergil C++ profile, CMake, test framework,
+   lint/sanitiser/coverage pipeline green on an empty skeleton. First task:
+   it front-loads the toolchain risk before any gateway code is written.
+2. **Outbound gateway** — §5.1.
+3. **Inbound gateway** — §5.2, including poison-message handling.
+4. **Wire protocol** — §5.0, with a conformance suite both implementations run.
+5. **Counter-example** — §5.4; deferrable.
+
+In **this repo**:
+
+6. **Reference sending application** — §5.3, with SEME-preserving `PDE` retry.
+7. **Failure-envelope document** — §6, with each window demonstrated live.
+8. **API findings** — Q1 and Q2 answered empirically, with the XMS adoption
+   note.
+9. **The argument document** — the reader-facing writeup carrying §3 and §4.
+10. **Duplicate-handling reference** — extending
+    `docs/swift-settlement-reference.md`, which covers none of this today.
+11. **`MQGET` failure-mode analysis** — a standalone reference, publishable on
+    its own. Every documented `MQGET` reason code classified on three axes:
+    *transient vs permanent*, *content-dependent vs not*, and — the axis that
+    makes it genuinely useful — **which `MQGMO` options make it reachable at
+    all**. 2080 exists only without `MQGMO_ACCEPT_TRUNCATED_MSG`; 2110/2119
+    exist only with `MQGMO_CONVERT`. Several conditions are ones you opt into.
+    Only the permanent-**and**-content-dependent cell is a poison message, and
+    the deliverable's verdict is whether that cell is empty for a content-opaque
+    consumer (§4.5). The thesis it carries: `MQGET` is not a one-or-zero call,
+    and the subtlety is where the failures live.
+12. **Lab deployment** — install the built binaries into the lab and wire them
+    to the queue managers.
+13. **Repo rename** — #272, sequenced late for completeness.
+
+Deliverables 6, 7 and 10 require the tokenizer and generator to handle
 **envelope-level structure** (block 5 trailers, `23G`), which today handle
 block 4 only. That work is on the critical path of the central argument, not a
 nicety.
@@ -391,8 +529,18 @@ observed behaviour recorded — including the ones that are uncomfortable, such
 as O4.
 
 - Induce each row; capture observed behaviour and reason codes.
-- Prove I3 end to end: a poison message on an ordered queue, head-of-line
-  blocking observed, `BOTHRESH` releasing it, the alert firing.
+- **Downstream outage that must divert nothing.** Take the receiving
+  application down for longer than any plausible backout threshold. Required
+  observation: the consumer halts and backs off, the queue depth grows, and
+  **no message is diverted anywhere**. On recovery the flow resumes in order
+  with nothing lost and nothing duplicated beyond what §6 I2 predicts.
+- **Unparseable message absorbed without a backout.** Inject a corrupt payload.
+  Required observation: the gateway carries it opaquely, the receiver accepts
+  and records it as invalid, acknowledges, and the lifecycle continues. Queue
+  depth does not grow; `BackoutCount` does not increment.
+- **Oversized message.** Confirm the 2080 path resizes and re-gets, and
+  separately confirm the declare-and-verify assertion that maximum frame size
+  ≥ `MAXMSGL`.
 - Exercise both gateways across an HA failover and a DR event.
 - Measure, do not assume, anything presented as a performance property.
 
@@ -414,6 +562,11 @@ as O4.
 - **The "MQ-native & minimalist / no new vendor products" rule is not
   breached.** The reference application's embedded store demonstrates where
   state belongs; it is not new lab infrastructure. No database node is added.
+- **Quality standards are part of the deliverable, not overhead.** The C++
+  component is held to full Vergil standards — format, clang-tidy, cppcheck,
+  ASan/UBSan and coverage — because an epic whose thesis is that the other
+  design lacks engineering rigour cannot ship an unmeasured exemplar. The
+  zero-exemption coverage invariant holds in both repositories (§5.5).
 
 ---
 
