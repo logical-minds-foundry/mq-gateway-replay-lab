@@ -1,4 +1,4 @@
-# Epic #268 — stateless REST↔MQ protocol gateway — spec
+# Epic #268 — stateless MQ protocol gateway — spec
 
 *A generic trading back-office gateway problem. No employer/client/vendor
 identifiable content; invented queue/host/identity names only.*
@@ -41,9 +41,16 @@ rather than with assertion.
 
 ## 2. Mission
 
-Produce the evidence and the argument that a REST-to-MQ protocol gateway
+Produce the evidence and the argument that a protocol gateway fronting MQ
 **must be stateless in both directions**, together with a working exemplar
 that demonstrates correct MQI usage within the API the team already uses.
+
+The exemplar is built by **factoring the MQ out of the application we already
+have**. The thread that called `MQGET` becomes a thread listening on a port.
+The code that called `MQPUT` becomes an RPC. Nothing else about the
+application changes — and in particular, **its state handling does not move**.
+That construction is the argument in miniature: the factoring is a protocol
+boundary, and a protocol boundary is not a place where state appears.
 
 The deliverable is a **recommendation with proof**, not a product. Success is
 that a reader who arrived believing the gateway should replay leaves
@@ -173,11 +180,40 @@ domains; separating them also makes the statelessness self-evident rather than
 a property that must be argued, and allows either direction to be killed
 independently during failover testing.
 
+### 5.0 The application-facing transport — deliberately trivial
+
+The protocol between the applications and the gateway is **arbitrary and
+unknown**. It will not be exposed to us, we do not need it, and none of the
+argument depends on it.
+
+Naming a specific technology is therefore an active risk, not a convenience.
+"We don't use that" is a cheap way to dismiss the whole design without engaging
+with any of it — and the dismissal would be unanswerable, because the choice
+genuinely is irrelevant. Worse, naming one would make a **transport-independent
+argument look transport-specific**: every window in §6 arises from *any*
+non-transactional request/response boundary, which is precisely the claim §4.1
+rests on.
+
+The exemplar therefore uses a **hand-rolled, minimal TCP protocol** —
+deliberately proprietary and deliberately uninteresting, so that no reader
+mistakes it for a recommendation or an assumption about their stack.
+
+It must nonetheless be **specified**, because the inbound contract depends on
+it. Trivial is not the same as vague:
+
+- Length-prefixed frames; no negotiation, no versioning, no framing subtleties.
+- Request → response carrying an explicit status, so the caller can
+  distinguish retryable from terminal outcomes.
+- Inbound: an explicit **positive acknowledgement**, because that
+  acknowledgement is what gates the `MQCMIT` in §5.2. If the ack semantics are
+  mushy, the inbound argument is mushy.
+
+Anything beyond that is out of scope, and its absence is the point.
+
 ### 5.1 Outbound gateway
 
-A protocol translator. Request in over REST — chosen precisely because it is
-arbitrary and carries no MQ semantics — one put, deterministic outcome
-returned.
+A protocol translator. One request in over the §5.0 transport, one put, one
+deterministic outcome returned.
 
 - Connect once; open `GW.SEC.INSTRUCT` once; hold both for the process
   lifetime. Never per message.
@@ -250,6 +286,13 @@ demonstrated.
 The enumerated windows, and who resolves each. This table is a primary
 deliverable in its own right — it is the artefact that answers "how do we know
 if we sent the message?"
+
+**These windows are transport-independent.** Not one of them is a property of
+the application-facing protocol; they arise from the *shape* of a
+non-transactional request/response boundary, whatever carries it. Substituting
+any other transport changes nothing in either table. This is what makes §5.0's
+refusal to name a technology a strengthening of the argument rather than a
+hand-wave.
 
 ### 6.1 Outbound
 
