@@ -716,8 +716,55 @@ instance in `CONNECTING_APP`** (a route or configuration problem). Reply-queue
 depth is a useful corroborating signal but a poor primary one, since depth also
 grows legitimately.
 
-This fits the existing observability tier rather than adding a new one — the
-repo already exports collector state to Prometheus and boards it in Grafana.
+**The mechanism: an append-only status stream, and a gateway that knows nothing
+about monitoring.** The gateway writes single-line JSON records to an
+append-only status file. It does not know what Prometheus is, does not compute
+alarms, and does not serve HTTP. A separate collector in this repo tails the
+file and exposes metrics; in another environment the same file feeds a log
+shipper instead, unchanged.
+
+This follows the pattern the base lab already established — every MQ diagnostic
+surface there emits **single-line JSON**, tailed by a collector — so the
+gateway's status stream has the shape the environment already ingests.
+
+Keep the distinction clean: **diagnostics are logs, state is metrics.** The
+status stream is state for alarms, not a diagnostic log, and it is not a
+substitute for the gateway's ordinary error logging.
+
+Record schema — defined here, because "it exports state" without a format is
+not an interface:
+
+```json
+{"ts":"2026-08-20T11:04:22.417Z","instance":"inbound-2","state":"STANDBY",
+ "reason":"2042","seq":1487}
+```
+
+`state` is one of the four above. `reason` is free text for the human.
+`seq` is a monotonically increasing per-instance counter, so a collector can
+detect gaps and restarts.
+
+**The heartbeat is mandatory, and it is what makes this design work.** A
+scraped endpoint reports a dead process automatically — the scrape simply
+fails. **A file does not.** A crashed gateway leaves a final record saying
+`ACTIVE`, and nothing ever contradicts it, so the "no instance `ACTIVE`" alarm
+would never fire *in exactly the failure it exists to detect*. Therefore:
+
+- Each instance writes a record on a fixed interval **even when its state has
+  not changed**.
+- The collector treats an instance whose newest record is older than a small
+  multiple of that interval as **`UNKNOWN`**, never as its last-known state.
+- Staleness is itself alarmable, and it is the signal that catches a process
+  that died without saying so.
+
+The file is rotated, and the collector must survive rotation and truncation by
+reopening on inode change — ordinary tail semantics, stated so it is not
+discovered later.
+
+**Why this shape rather than a metrics endpoint in the gateway** — the
+principle is in §10: the exemplar's *readability* is a deliverable. Developers
+will read the code, not this document. Every line in the gateway that is not
+about MQ makes it a worse exemplar, and an HTTP server, a metrics registry and
+an alarm model are three such things. Writing a JSON line is one.
 
 #### The mechanism generalises — which makes the parallelism argument moot
 
@@ -1113,6 +1160,15 @@ behaviour recorded — including the uncomfortable ones, such as O4.
 - **The "MQ-native & minimalist / no new vendor products" rule is not
   breached.** The reference application's embedded store demonstrates where
   state belongs; it is not new lab infrastructure. No database node is added.
+- **The exemplar's readability is a deliverable.** Developers will read the
+  code, not this document — that is the realistic path by which this work has
+  influence, and it should be planned for rather than hoped about. So the
+  gateway carries only what is about MQ and the protocol. Anything that can
+  live outside the process does: monitoring semantics, alarm thresholds,
+  metric formats, aggregation. Every non-MQ line in the gateway makes it a
+  worse exemplar, and a reader who has to skip past a metrics registry to find
+  the `MQGET` loop has been taxed for nothing. This is why §5.6 puts a JSON
+  line in the gateway and the Prometheus knowledge in a separate collector.
 - **Quality standards are part of the deliverable, not overhead.** The C++
   component is held to full Vergil standards — format, clang-tidy, cppcheck,
   ASan/UBSan and coverage — because an epic whose thesis is that the other

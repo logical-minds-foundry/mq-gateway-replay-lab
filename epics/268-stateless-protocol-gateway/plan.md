@@ -688,7 +688,17 @@ exported state model.
 **Interfaces:**
 
 - Consumes: T4's recorded API surface; T6's frame codec
-- Produces: the binary T11 deploys and T12 measures
+- Produces: the binary T10 deploys and T12 measures, plus **the status stream
+  T11 consumes** — an append-only file of single-line JSON records, one per
+  state change *and* one per heartbeat interval:
+
+```json
+{"ts":"2026-08-20T11:04:22.417Z","instance":"inbound-2","state":"STANDBY","reason":"2042","seq":1487}
+```
+
+  `state` ∈ `CONNECTING_APP` | `STANDBY` | `ACTIVE` | `FAILED`; `seq` is a
+  monotonic per-instance counter so the collector can detect gaps and restarts.
+  The gateway knows nothing about Prometheus, alarms, or thresholds (spec §10).
 
 - [ ] **Step 1: Write the failing startup-order test**
 
@@ -735,11 +745,33 @@ Content-opaque: never set `MQGMO_CONVERT`. Handle 2080 by reading `DataLength`,
 resizing and re-getting. Back out **only** when the receiver is unreachable.
 Abort if the inward connection cannot be recovered within its bounded window.
 
-- [ ] **Step 6: Run until green, then commit**
+- [ ] **Step 6: Write the failing heartbeat test**
+
+```text
+Given the instance has been in STANDBY for three heartbeat intervals
+And its state has not changed
+When the status stream is read
+Then it contains at least three records for this instance
+And their seq values are strictly increasing
+```
+
+**This is not optional decoration.** A scraped endpoint reports a dead process
+automatically — the scrape fails. A file does not: a crashed gateway leaves a
+final record saying `ACTIVE` and nothing ever contradicts it, so the "no
+instance `ACTIVE`" alarm would never fire in precisely the failure it exists to
+detect. The heartbeat is what makes staleness detectable.
+
+- [ ] **Step 7: Implement the status writer**
+
+One line of JSON per state change and per heartbeat interval, appended and
+flushed. No Prometheus, no thresholds, no alarm logic — the gateway does not
+know what is downstream of it (spec §10).
+
+- [ ] **Step 8: Run until green, then commit**
 
 ```bash
 vrg-container-run -- vrg-validate
-vrg-commit --type feat --scope inbound --message "inbound gateway: ack-gated commit, exclusive-open standby, exported state model"
+vrg-commit --type feat --scope inbound --message "inbound gateway: ack-gated commit, exclusive-open standby, JSON status stream"
 ```
 
 ---
@@ -856,7 +888,10 @@ tier.
 
 **Interfaces:**
 
-- Consumes: T8's exported state
+- Consumes: T8's **status stream** — the append-only single-line-JSON file
+  whose record schema is fixed in T8's Produces block. The collector tails it,
+  reopening on inode change so rotation and truncation do not silently stop the
+  feed.
 - Produces: the signals T12's scenarios verify
 
 - [ ] **Step 1: Write the failing metric test**
@@ -870,18 +905,37 @@ def test_standby_is_not_an_alarm_but_missing_active_is():
     assert "gw_inbound_active_total 1" in text
 ```
 
-- [ ] **Step 2: Implement the exporter**
+- [ ] **Step 2: Write the failing staleness test**
 
-Gauges per instance per state, plus `gw_inbound_active_total` and
-`gw_inbound_standby_total`.
+```python
+def test_a_stale_record_is_UNKNOWN_not_its_last_known_state():
+    """A crashed gateway leaves a final record saying ACTIVE. Trusting it would
+    make 'no instance ACTIVE' unfirable in exactly the failure it detects."""
+    records = [
+        {"ts": "2026-08-20T11:00:00Z", "instance": "i1", "state": "ACTIVE",  "seq": 10},
+        {"ts": "2026-08-20T11:04:50Z", "instance": "i2", "state": "STANDBY", "seq": 99},
+    ]
+    text = render(records, now="2026-08-20T11:05:00Z", heartbeat_s=10, stale_after=3)
+    assert 'gw_inbound_state{instance="i1",state="UNKNOWN"} 1' in text
+    assert 'gw_inbound_state{instance="i1",state="ACTIVE"} 0' in text
+    assert "gw_inbound_active_total 0" in text
+```
 
-- [ ] **Step 3: Add the three alarms**
+- [ ] **Step 3: Implement the collector**
+
+Tail the status file, reopening on inode change so rotation and truncation do
+not silently stop the feed. Keep the newest record per instance. Any instance
+whose newest record is older than `stale_after × heartbeat_s` renders as
+`UNKNOWN` — **never as its last-known state**. Gauges per instance per state,
+plus `gw_inbound_active_total` and `gw_inbound_standby_total`.
+
+- [ ] **Step 4: Add the four alarms**
 
 No instance `ACTIVE`; standby count below expected (**silently degraded
 redundancy — the failure that hides until it matters**); any instance in
-`CONNECTING_APP`.
+`CONNECTING_APP`; any instance `UNKNOWN` (stale — died without saying so).
 
-- [ ] **Step 4: Verify and commit**
+- [ ] **Step 5: Verify and commit**
 
 ```bash
 vrg-container-run -- vrg-validate
