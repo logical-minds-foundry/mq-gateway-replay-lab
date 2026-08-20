@@ -44,13 +44,21 @@ these.
 - **Validation is `vrg-container-run -- vrg-validate`** and nothing else.
 - Commit with `vrg-commit`; branch `feature/<issue>-<slug>` off `develop`.
 
-## Known-red baseline
+## Prerequisite — not part of this epic
 
-`develop` currently fails `vrg-validate` on **19 pre-existing `ansible-lint`
-violations** in `ansible/roles/gw-*` (role-name pattern, name casing, YAML comma
-spacing), with the profile message indicating a tooling upgrade raised the
-required bar. **This blocks every PR in this repo, including the docs PR.**
-Task 0 clears it. Do not begin any other lab-repo task until it is green.
+**#276 — `ansible-lint` fails on `develop`.** Nineteen pre-existing violations
+in `ansible/roles/gw-*`, surfaced by a tooling upgrade that raised the required
+profile. Since `vrg-validate` is the sole gate, **this blocks every PR in this
+repository, including the docs PR that publishes this plan.**
+
+It is filed **outside epic #268**, under the repo's ad-hoc epic. This epic
+discovered the problem; it did not create it, and absorbing unrelated lint debt
+would misreport the epic's scope and make its completion depend on maintenance
+with nothing to do with it.
+
+**No lab-repo task below may start until #276 is merged and `develop` is
+green.** Component-repo tasks (T4, T6) are unaffected and may proceed in
+parallel.
 
 ---
 
@@ -63,7 +71,7 @@ to be shortened.
 
 | Phase | Mode | Tasks | Rationale |
 |---|---|---|---|
-| 0 | Unblock | T0 | Nothing merges until validation is green |
+| — | Prerequisite | **#276** (outside this epic) | Nothing in this repo merges until validation is green |
 | 1 | Reference documents | T1–T3 | No build dependency; publishable alone; two are already substantially researched |
 | 2 | Foundations | T4–T6 | Toolchain risk front-loaded; protocol fixed before either side implements it |
 | 3 | Build | T7–T9 | Gateways and the reference app |
@@ -71,8 +79,9 @@ to be shortened.
 | 5 | Synthesis | T14–T15 | The arithmetic and the argument, which need the measurements |
 | 6 | Tail | T16–T18 | Counter-example, rename, closing bookends |
 
-**The critical path is T0 → T4 → T6 → T8 → T10 → T11 → T14.** Everything else
-parallelises against it.
+**The critical path is T4 → T6 → T8 → T10 → T11 → T12b → T14**, with **#276**
+gating everything in this repo but not the component-repo tasks. Everything
+else parallelises against it.
 
 ---
 
@@ -111,73 +120,6 @@ parallelises against it.
 | `docs/gateway-failure-envelope.md` | L2 |
 | `docs/gateway-risk-model.md` | L11 |
 | `docs/stateless-gateway-argument.md` | L4 |
-
----
-
-## Task 0: Clear the ansible-lint baseline
-
-**Deliverable:** `vrg-container-run -- vrg-validate` is green on `develop`.
-
-**Files:**
-
-- Modify: `ansible/roles/gw-observability/`, `gw-queues/`, `gw-sec-collector/`,
-  `gw-sec-observability/`, `gw-sec-queues/`, `gw-sec-svc-queues/`,
-  `gw-svc-queues/` — directory names and `handlers/main.yml` task names
-- Modify: `ansible/roles/gw-sec-queues/defaults/main.yml:79,80,83,85,89`
-
-**Interfaces:**
-
-- Consumes: nothing
-- Produces: a green baseline every later task depends on
-
-- [ ] **Step 1: Reproduce and capture the full violation list**
-
-```bash
-cd <worktree> && vrg-container-run -- vrg-validate --check common 2>&1 | tee /tmp/lint-baseline.txt
-```
-
-Expected: 19 fatal violations — 7 `role-name`, 8 `yaml`, 4 `name[casing]`.
-
-- [ ] **Step 2: Fix `yaml[commas]` (lowest risk, no references to update)**
-
-Remove the extra spaces after commas at `gw-sec-queues/defaults/main.yml`
-lines 79, 80, 83, 85, 89.
-
-- [ ] **Step 3: Fix `name[casing]` — capitalise handler and task names**
-
-```yaml
-# before
-- name: reload prometheus
-# after
-- name: Reload prometheus
-```
-
-Apply in `gw-observability/handlers/main.yml:2`,
-`gw-sec-collector/handlers/main.yml:4`,
-`gw-sec-observability/handlers/main.yml:2` and `:8`.
-
-- [ ] **Step 4: Decide the `role-name` fix and record it**
-
-`ansible-lint` requires `^[a-z][a-z0-9_]*$`; all seven roles use hyphens.
-Renaming directories means updating every `roles:` reference in
-`ansible/site*.yml` and any `--limit`/`--tags` documentation.
-
-Two options — **choose and record the choice in the PR body**:
-(a) rename `gw-observability` → `gw_observability` etc. and update all
-references; (b) add a scoped `.ansible-lint` `skip_list` entry for `role-name`
-with a comment explaining that the naming predates the profile bump.
-
-Prefer (a) — it satisfies the profile rather than silencing it. Choose (b) only
-if the reference sweep proves larger than the fix warrants, and say so.
-
-- [ ] **Step 5: Verify green, then commit**
-
-```bash
-vrg-container-run -- vrg-validate
-vrg-commit --type fix --scope ansible --message "bring gw-* roles up to the ansible-lint production profile"
-```
-
-Expected: all six stages pass.
 
 ---
 
@@ -1237,8 +1179,12 @@ keyed to the old path. Sequenced late to avoid churning in-flight branches.
 
 **Spec coverage.** C1→T4, C2→T9, C3→T8, C4→T6, C5→T16; L1→T7, L2→T12, L3→T13,
 L4→T15, L5→T3, L6→T1, L7→T10, L8→T17, L9→T2, L10→T5, L11→T14, L12→T12,
-L13→T10, L14→T11. Plus T0 for the known-red baseline and T18 for the bookends.
-**All 19 deliverables are covered.**
+L13→T10, L14→T11. Plus T12b for §9's HA/DR requirement and T18 for the
+bookends. **All 19 deliverables are covered.**
+
+**Scope compliance:** every task traces to a spec deliverable or to §9. The one
+task that did not — clearing the `ansible-lint` baseline — has been filed
+outside the epic as #276 and appears here only as a stated prerequisite.
 
 **§9 scenario coverage**, checked separately because deliverable coverage did
 not imply it — the first alignment pass found four §9 scenarios with no step:
