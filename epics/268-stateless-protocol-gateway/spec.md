@@ -295,6 +295,16 @@ supposed to create none. In practice this is comfortable: SWIFT FIN caps
 message text around 10 KB against an MQ default `MAXMSGL` of 4 MB, so this is a
 declare-and-verify assertion, not defensive code.
 
+**Endpoint failover belongs in the sender, and stays trivial.** The sender is
+configured with a *list* of gateway endpoints (§5.6). It randomises the order,
+tries one, and falls through to the next on a connection failure or error
+response. That is the whole client-side availability story, and it is
+deliberately not elaborated: connection tuning, backoff policy and
+circuit-breaking on the client are the application team's concern, inside a
+transport that is a placeholder for whatever they actually use. Bleeding every
+edge case through this protocol would be modelling a black box we have already
+said we do not need to model.
+
 Anything beyond that is out of scope, and its absence is the point.
 
 Because the protocol is implemented twice — C++ in the component repo, Python
@@ -637,6 +647,78 @@ Given the settlement lifecycle runs in minutes to days (§5.2), a failover
 measured in minutes is very likely acceptable — but that should be a *measured
 conclusion*, not an assumption.
 
+#### The mechanism generalises — which makes the parallelism argument moot
+
+The same design accommodates the topology we do **not** recommend. The only
+difference between "one active, N standby" and "N parallel readers" is the open
+option: `MQOO_INPUT_EXCLUSIVE` versus `MQOO_INPUT_SHARED`. **Make it a
+configuration setting**, and the exemplar supports both from one codebase.
+
+This matters rhetorically as much as technically. "We want multiple agents
+draining the reply queue" stops being an architectural disagreement and becomes
+a config flag. We can say plainly: *you can do this, the design extends to it,
+here is what it costs you, and here is why we do not recommend it* — rather
+than appearing to forbid it.
+
+What it costs: the app must then own cross-instance deduplication and
+sequencing, and you lose the only vantage point from which reordering is
+observable (§5.2). What it buys: throughput, which §10 records is not a
+constraint in this domain.
+
+#### Why three, not two
+
+Two instances give redundancy only until the first failure. From that moment
+until repair completes you are running **unprotected**, and a second failure in
+that window is a full outage. Three is the minimum count that is *still
+redundant after one failure*.
+
+The quantitative form, which feeds the risk model (L11, §4.6): outage
+probability scales with the **exposure window** — the ratio of repair time to
+time between failures. With two nodes a single failure opens that window; with
+three, an outage requires two failures inside it, so the improvement is roughly
+quadratic rather than linear. This is the reasoning behind three replica sites
+generally, and it applies unchanged here.
+
+**And the two paths have different exposure**, which is easy to miss:
+
+| | Outbound | Inbound |
+|---|---|---|
+| Instances active | All | One; the rest stand by |
+| Cost of losing one | ~1/N of capacity | A genuine outage window |
+| Recovery time | ≈ zero — the sender tries the next endpoint | The measured takeover time (§9) |
+
+So the inbound path is where the redundancy count earns its keep: with three
+contenders, a second failure during a takeover still leaves a standby to win
+the open.
+
+**One shared dependency, stated honestly:** all instances connect to the same
+queue manager. Gateway redundancy composes with — and is subordinate to — queue
+manager availability, which is the base lab's subject and is already addressed.
+Redundant gateways do not help if the queue manager is gone.
+
+**One operational detail:** N standby contenders all retrying the same open
+want a **jittered** retry interval, so they neither synchronise into a
+thundering herd nor race deterministically for the handle.
+
+#### What the lab can and cannot demonstrate
+
+The inventory today has one host per group (`lab_qm`, `lab_obs`, `svc_qm`) and
+no host dedicated to running the gateway. So:
+
+- **Demonstrate process-level failover.** Run the contenders as separate
+  processes and exercise the whole mechanism — exclusive open, 2042, standby
+  logging, takeover, measured recovery. The queue manager arbitrates **by
+  connection, not by host**, so this is a *faithful* demonstration of the
+  mechanism, not a simplification of it.
+- **Treat host-level distribution as a deployment statement**, not something
+  the lab must prove. What co-located processes cannot show is *failure
+  independence* — and that is a property of their deployment, not of this
+  design.
+- **L11 must state that assumption.** The quadratic redundancy benefit above
+  assumes independent failure domains. Three processes on one host share a
+  domain and do not get it. Writing the arithmetic without that caveat would be
+  precisely the hand-waving §4.6 objects to.
+
 #### The obligation this hands back
 
 The state belongs in the receiving application (§4, §5.3) — and **the
@@ -819,7 +901,15 @@ changes. **C** = the component repo, **L** = this lab repo.
   substituting their own numbers rather than their own instincts.
 - **L12 — Inbound HA: exclusive-open standby.** §5.6. The active/standby
   takeover mechanism, the 2042 retry discipline every exclusive-open
-  application needs regardless, and the measured failover figures from §9.
+  application needs regardless, jittered retry, and the measured failover
+  figures from §9. Open mode is **configurable** (`EXCLUSIVE` for
+  active/standby, `SHARED` for parallel readers) so the exemplar demonstrates
+  the topology we recommend while supporting the one we do not.
+- **L13 — Multi-instance deployment.** Deploy three inbound contenders and
+  multiple outbound instances, with the sender configured for endpoint
+  failover. Process-level in the lab, since the inventory has no dedicated
+  gateway hosts — a faithful demonstration, because the queue manager
+  arbitrates by connection rather than by host (§5.6).
 
 **L1, L2 and L5 require the tokenizer and generator to handle envelope-level
 structure** (block 5 trailers, `23G`), which today handle block 4 only. That
@@ -918,6 +1008,17 @@ behaviour recorded — including the uncomfortable ones, such as O4.
 - **XA is out — permanently.** `MQBEGIN` is not valid on a client connection,
   and the gateway will always connect as a client. This is an invariant of the
   target environment, not a deferred option.
+- **Latency is not a design constraint — and this is a stated architectural
+  input, not an aside.** This is back-office settlement. The obligation is to
+  complete within a window measured in **hours and days** (T+1, T+2), governed
+  by contract, not in microseconds governed by competition. It is the opposite
+  of a market-data or trading path. Every argument in this spec that declines
+  to optimise throughput — the single consumer (§5.2), the serial ack-gated
+  inbound commit (§5.2), the standby rather than parallel availability model
+  (§5.6) — rests on this, so it is recorded here once rather than re-argued
+  each time. The reflex that *serial must mean too slow* is the likeliest
+  unexamined assumption behind the sample code's shared open, and naming the
+  timescale is what defuses it.
 - **Out of scope:** authorization, payload validation and business rules;
   HA/DR of any state store; re-implementing the team's application.
 - **The "MQ-native & minimalist / no new vendor products" rule is not
