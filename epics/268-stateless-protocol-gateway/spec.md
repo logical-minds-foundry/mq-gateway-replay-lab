@@ -208,6 +208,39 @@ If the analysis holds, the poison-message facility is not merely unnecessary
 here — it is unreachable by construction, which is a far stronger thing to be
 able to say.
 
+### 4.6 Complexity should be proportional to measured risk
+
+HA and DR are risk-management investments. Individual components have
+unremarkable mean times to failure; combined, they make the *service's* mean
+time to failure very long, and any residual failure short and recoverable. How
+much to invest is a cost-benefit question with an arithmetic answer.
+
+That arithmetic is almost never done. It is asserted, and the assertions tend
+to be shaped by instinct rather than exposure.
+
+**The sharpest form of the critique is not that their gateway is over-built.
+It is that it is over-built *and* under-engineered at the same time.** It adds
+a stateful replay tier — real complexity, real new failure modes, a new thing
+requiring its own HA — while omitting syncpoint on the get path, which silently
+loses messages. Complexity was spent generously; it was simply spent somewhere
+uncorrelated with where the risk actually is. The problem is not the quantity
+of engineering but its *distribution*.
+
+The corresponding claim for this design is falsifiable, which is the point:
+making the gateway stateless, placing retry with the sender and duplicate
+handling with the receiver, removes a tier **without** removing availability
+(§5.6) — and if the numbers said otherwise, we would want to know.
+
+**What this spec can and cannot supply.** We do not have their message rates,
+host MTBFs, deployment topology, or the business cost of a lost settlement
+instruction, and we will not get them. A document asserting failure frequencies
+would be the same hand-waving in better clothes. What we *can* build is the
+**model**: the expected-failure-frequency relation, the duplicate-versus-loss
+cost asymmetry, and the threshold at which additional gateway complexity earns
+its place — with lab-measured values wherever we can measure them (failover
+time, reconnect time, observed rates) and their business parameters left as
+explicit named variables. Deliverable **L11**.
+
 ---
 
 ## 5. Architecture
@@ -295,9 +328,26 @@ A single-threaded blocking get-loop.
 
 **Why single-threaded — and what that reasoning does *not* rest on.** One
 consumer means no coordination between consumers, no partial failure spread
-across threads, and one unit of work in flight at a time. That is the
-statelessness and simplicity argument, and it stands alone. In-order delivery
-is a *free consequence* of one consumer, **not the justification for it**.
+across threads, and one unit of work in flight at a time. In-order delivery is
+a *free consequence* of one consumer, **not the justification for it**.
+
+Three positive reasons, none of which is "ordering is required":
+
+- **Throughput is not the constraint.** A settlement lifecycle runs in minutes,
+  hours or days — T+1 and T+2 are ordinary. This is the opposite of a
+  market-data firehose, and parallelism here optimises a dimension nobody is
+  short of. The instinct that *serial must mean slow* is worth naming
+  explicitly in the writeup, because it is probably the reflex behind the
+  shared open in the sample code.
+- **In-order processing makes out-of-order arrival visible.** Precisely because
+  the standard permits arbitrary advice order (§11.4), a single consumer turns
+  reordering into something you can *observe and report* rather than something
+  scrambled beyond detection. Concurrency would destroy the only vantage point
+  from which the anomaly is even nameable.
+- **Availability comes from standby, not parallelism** (§5.6). N parallel
+  consumers would be correctness-safe given §11.4 — but they buy availability
+  at the cost of the observability above, and standby delivers the same
+  availability without that cost.
 
 This distinction is deliberate, and the standards research (§11.4) has now
 settled why: **the settlement lifecycle cannot require in-order processing,
@@ -463,7 +513,7 @@ shared source:
 | Objects opened **per message** rather than once at startup | Pure cost: an open and close per message, for a handle that could be held for the process lifetime |
 | **Gets outside syncpoint** | Loses messages. The destructive read is unrecoverable if anything downstream then fails (§4.4) |
 | **Puts outside syncpoint** | Defensible in isolation — conceded deliberately (§4.4), which is what makes the get-side criticism credible |
-| Reply queue opened **`MQOO_INPUT_SHARED`** | **Incoherent rather than incorrect.** It permits a second consumer, and multiple consumers race — priority governs queue position, not which consumer wins. The code takes no advantage of the concurrency it enables, while contradicting the sequential processing it appears to assume. Since ordering turns out not to be required (§11.4), the open is not a correctness defect; it is a design that has not decided what it wants |
+| Reply queue opened **`MQOO_INPUT_SHARED`** | **Not a defect — but not a design either.** Since ordering is not required (§11.4), parallel consumers are correctness-safe, so the shared open is legitimate in principle. What is missing is any *use* of it: no second consumer, no availability story it serves, and no acknowledgement of what it costs (§5.2 — it destroys the vantage point from which reordering is observable). The criticism is that the option was selected without a decision behind it, and the exclusive-open standby pattern (§5.6) delivers the availability a shared open only gestures at |
 | **Stateful replay in the protocol layer** | The epic's central thesis (§3, §4) |
 
 The `MQOO_INPUT_SHARED` row is worth dwelling on in the writeup, because it is
@@ -509,6 +559,92 @@ then holds in both repositories** rather than being quietly abandoned in one.
 
 The same toolchain unlocks **#228** (MQ message-exit capability), which needs
 exactly this C++ build-and-test capability and is currently blocked without it.
+
+### 5.6 Availability — and why the two paths differ
+
+Removing state from the gateway must not remove **availability** from it. This
+section exists because the two directions have structurally different
+availability problems, and because the recommendation improves their HA posture
+rather than trading it away.
+
+#### Outbound — trivially redundant
+
+Stateless, no syncpoint coordination, no shared resource. Run **N instances**;
+the sending application round-robins a host:port list, or tries them in series
+and falls through on failure. Redundancy is nearly free. This is the textbook
+case for a stateless service, and it is available to them today.
+
+#### Inbound — one active instance, N standing by
+
+There is one reply queue, so there is one consumer. The availability answer is
+not parallelism, it is **automatic takeover**, and MQ supplies the entire
+mechanism:
+
+1. Every instance opens the reply queue with **`MQOO_INPUT_EXCLUSIVE`** at
+   startup.
+2. **One wins.** It becomes the active consumer and holds the handle for its
+   process lifetime.
+3. The others fail with **`MQRC_OBJECT_IN_USE` (2042)** — exclusive open fails
+   if the object is already open for input of any sort — log that they are
+   standing by, sleep, and retry.
+4. When the active instance dies, the queue manager eventually releases the
+   orphaned handle. The next standby to retry wins the open and **takes over
+   with no coordination, no shared state, and no handover protocol.**
+
+**The lock lives inside the queue manager** — the component that is already
+highly available. Split-brain is structurally impossible: MQ will not grant two
+exclusive input handles, so there is nothing to fence and no consensus protocol
+to get wrong. This is the same paradigm as a multi-instance queue manager,
+where two instances contend for a lock and the winner becomes active.
+
+**The retry logic is not extra work — it is mandatory anyway.** A single
+instance that crashes and restarts immediately will *also* hit 2042, because
+the previous handle has not yet been released. Any application opening a queue
+exclusively must handle this; it is basic practice, and it is the same problem
+the command server and event monitors face. The HA design therefore costs
+nothing new. It only changes the retry *parameters*: a lone instance backs off
+briefly and then gives up loudly, whereas a standby backs off indefinitely and
+logs that it is waiting. IBM's own programmer response for 2042 is that *"system
+design should specify whether an application is to wait and retry, or take
+other action."*
+
+**This is why objects are opened once at startup (§5.1, §5.2).** Per-message
+open does not merely waste cycles — it makes this pattern impossible. A gateway
+that opens and closes per message holds no claim to arbitrate, cannot express
+active-versus-standby, and drops its position between every message. The
+anti-pattern has an *architectural* cost, not just a performance one.
+
+#### Failover latency — the arithmetic
+
+Takeover is not instant, and the spec should say so with numbers rather than
+adjectives:
+
+```text
+failover ≈ orphaned-handle release + standby retry interval
+```
+
+- **Handle release** is bounded by how quickly the queue manager notices the
+  dead client. On a client connection that is driven by the channel heartbeat:
+  **`HBINT` defaults to 300 seconds**, and heartbeat flows are what close
+  queues left open at the receiving end of a channel. Untuned, that alone can
+  dominate failover.
+- **Standby retry interval** is ours to choose, and it is a straight trade:
+  short means faster takeover and more log noise, long means quieter and
+  slower.
+
+Both are tunable, and §9 measures the real figure rather than asserting one.
+Given the settlement lifecycle runs in minutes to days (§5.2), a failover
+measured in minutes is very likely acceptable — but that should be a *measured
+conclusion*, not an assumption.
+
+#### The obligation this hands back
+
+The state belongs in the receiving application (§4, §5.3) — and **the
+availability obligation follows the state**. Their receiving component is
+singular *and* stateful, which is the genuinely hard availability problem. This
+epic does not create that obligation; the state was always theirs. But it does
+make it visible, and it is fairer to say so plainly here than to let them
+discover it later.
 
 ---
 
@@ -671,6 +807,19 @@ changes. **C** = the component repo, **L** = this lab repo.
   event time, and add a test that **shuffles a response stream and asserts the
   terminal state is unchanged**. That test turns the standards finding into an
   executable guarantee, which is worth more than the sort key ever was.
+- **L11 — Risk model (§4.6).** The arithmetic under the design decisions:
+  expected failure frequency from component MTBF and message volume; expected
+  duplicates per year under stateless retry; the cost asymmetry between a
+  duplicate (detectable, `PDE`-markable, costs operational attention) and a
+  lost message (undetectable, unrecoverable); and the threshold at which extra
+  gateway complexity earns its place. **Lab-measured values where we can
+  measure them** — failover time from §9, reconnect time, observed rates — and
+  their business parameters as explicit named variables, never invented.
+  Publishable, and the piece that lets a reader disagree with our conclusion by
+  substituting their own numbers rather than their own instincts.
+- **L12 — Inbound HA: exclusive-open standby.** §5.6. The active/standby
+  takeover mechanism, the 2042 retry discipline every exclusive-open
+  application needs regardless, and the measured failover figures from §9.
 
 **L1, L2 and L5 require the tokenizer and generator to handle envelope-level
 structure** (block 5 trailers, `23G`), which today handle block 4 only. That
@@ -741,6 +890,18 @@ behaviour recorded — including the uncomfortable ones, such as O4.
   the kind of claim this document refuses everywhere else, and an unmeasured
   serial bottleneck is a free objection handed to a reviewer. The repo's
   existing `scale_bench.py` and `docs/scale-analysis.md` are the precedent.
+- **Inbound standby takeover (§5.6).** Start two inbound instances; confirm one
+  wins the exclusive open and the other logs 2042 and stands by. Kill the
+  active one and **measure the wall-clock time until the standby is consuming**.
+  Repeat with `HBINT` at its 300-second default and at a tuned value, so the
+  handle-release contribution is isolated from the retry interval. Publish the
+  numbers — this is the headline availability figure of the whole design, and
+  the one thing that turns "it fails over automatically" into a claim with a
+  unit attached.
+- **Restart-into-2042.** Kill the *only* instance and restart it immediately;
+  confirm it hits 2042 and recovers by retry rather than dying. This is the
+  case every exclusive-open application must handle regardless of HA, and it
+  proves the standby logic costs nothing extra.
 - Exercise both gateways across an HA failover and a DR event.
 - Measure, do not assume, anything presented as a performance property.
 
