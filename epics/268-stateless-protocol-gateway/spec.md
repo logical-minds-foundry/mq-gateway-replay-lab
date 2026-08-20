@@ -196,7 +196,7 @@ acknowledges (§5.3). Custody transfers; the lifecycle continues; no queue
 backs up; no component is added.
 
 **The strong form of the claim** — to be established by the `MQGET`
-failure-mode analysis (§8) rather than assumed: for a *content-opaque*
+failure-mode analysis (L6, §8) rather than assumed: for a *content-opaque*
 consumer, there may be **no content-dependent permanent `MQGET` failure at
 all**. The two obvious candidates both dissolve on inspection: 2080 completes
 with `MQCC_WARNING`, leaves the message queued and hands back the length
@@ -264,6 +264,13 @@ declare-and-verify assertion, not defensive code.
 
 Anything beyond that is out of scope, and its absence is the point.
 
+Because the protocol is implemented twice — C++ in the component repo, Python
+in the reference application here — a small **conformance corpus** (C4) is what
+actually holds the two in agreement. Without it, "trivial but
+specified" is aspiration rather than a property anything enforces, and a
+framing disagreement on the ack would be indistinguishable from message loss at
+exactly the moment §9 is trying to prove there is none.
+
 ### 5.1 Outbound gateway
 
 A protocol translator. One request in over the §5.0 transport, one put, one
@@ -326,6 +333,14 @@ on the queue *is* the record that it has not yet been accepted downstream.
 Where state legitimately lives, built to demonstrate that placing it there is
 straightforward.
 
+**Scoping principle: the application is deliberately a black box.** This epic
+demonstrates *the gateway*, not a realistic trading application. The reference
+app exists to prove that the state has somewhere sensible to live and that the
+contracts on it are cheap to honour — nothing more. Every temptation to make it
+realistic (richer validation, business rules, a real persistence tier, an
+operator interface) should be refused: it would add effort that proves nothing
+about the thesis, and it would blur the boundary the epic exists to draw.
+
 - Holds instruction state and lifecycle.
 - On retry, **preserves the original SEME and sets `PDE`**.
 - Consumes the inbound gateway's downstream deliveries and acknowledges only
@@ -339,9 +354,20 @@ straightforward.
   backout queue, which forces another consumer — see §4.5. Recording invalid
   messages is invalid-message *state*, and state is this component's job.
 
-Storage is deliberately simple and embedded. Production-grade database
-resiliency is a solved problem owned elsewhere and is explicitly not
-instrumented here.
+**Storage is SQLite** — embedded, single-writer, and the simplest thing that
+provides a real transaction.
+
+The one guarantee that is **not** negotiable: the record is committed inside a
+transaction **before** the acknowledgement is sent. The ack means custody has
+transferred (§5.0), and `MQCMIT` follows it — so an ack sent ahead of a durable
+commit is a lie that MQ acts on, and the message is gone.
+
+This is where "simple" and "weak" must be kept apart. Simple means *small in
+scope*: no business rules, no operator interface, no production persistence
+tier. It does not mean weak in guarantees, because this particular guarantee is
+what the inbound argument rests on. Production-grade database resiliency
+remains a solved problem owned elsewhere and is explicitly not instrumented
+here — but atomicity at the ack boundary is instrumented, and §9 tests it.
 
 ### 5.4 Counter-example
 
@@ -415,7 +441,7 @@ hand-wave.
 |---|---|---|---|
 | O1 | Request lost before reaching the gateway | Timeout | Caller retries; same SEME, `PDE` |
 | O2 | Gateway dies before `MQPUT` | Timeout / connection reset | Caller retries; same SEME, `PDE` |
-| O3 | `MQPUT` interrupted — 2549 | Error | Caller retries; same SEME, `PDE` |
+| O3 | `MQPUT` interrupted mid-call — 2549 *or* 2009, see below | Error | Caller retries; same SEME, `PDE` |
 | O4 | Put succeeded, response to caller lost | Timeout | Caller retries; same SEME, `PDE` |
 
 Every outbound row resolves the same way, and none of them involve the
@@ -435,7 +461,17 @@ which `PDE` does.
 | I2 | Delivered, acknowledgement lost, GET backed out | Duplicate delivery downstream | Receiving app deduplicates on SEME/RELA |
 | I3 | Message unparseable by the receiving application | None — it is accepted and acknowledged | Receiver records it as invalid (§5.3); lifecycle continues; no backout, no queue growth |
 | I3b | Receiving application unreachable | Backout; consumer halts | Circuit-break with backoff; one backout per outage, not per spin |
-| I4 | Acknowledged, `MQCMIT` interrupted — 2549 | Possible redelivery | Same as I2 — receiving app deduplicates |
+| I4 | Acknowledged, `MQCMIT` interrupted — 2549 *or* 2009, see below | Possible redelivery | Same as I2 — receiving app deduplicates |
+
+**Which reason code O3 and I4 actually produce depends on §7 Q1.**
+`MQRC_CALL_INTERRUPTED` (2549) is documented as returned *to a client using a
+**reconnectable** connection*. If Q1 resolves that the C++ classes cannot set
+`MQCNO_RECONNECT`, the exemplar will instead see `MQRC_CONNECTION_BROKEN`
+(2009) in these windows. **The indeterminacy is identical either way, and so is
+the resolution** — retry with the SEME preserved and `PDE` set. That the
+correct behaviour does not depend on which code arrives is itself worth
+stating: it means the caller's obligation is robust to an API detail the caller
+cannot see. The table is to be finalised once Q1 is answered empirically.
 
 Inbound recovery requires no gateway state at all: MQ's own transactionality
 provides it, provided the gateway is written to use it correctly.
@@ -481,52 +517,98 @@ classes. This spec does not assert it of C++.
 
 ## 8. Deliverables
 
-In **`mq-protocol-gateway`** (new, private):
+Labelled rather than numbered, so cross-references cannot drift as the list
+changes. **C** = the component repo, **L** = this lab repo.
 
-1. **Repository bootstrap** — Vergil C++ profile, CMake, test framework,
-   lint/sanitiser/coverage pipeline green on an empty skeleton. First task:
-   it front-loads the toolchain risk before any gateway code is written.
-2. **Outbound gateway** — §5.1.
-3. **Inbound gateway** — §5.2, including poison-message handling.
-4. **Wire protocol** — §5.0, with a conformance suite both implementations run.
-5. **Counter-example** — §5.4; deferrable.
+### In `mq-protocol-gateway` (new, private)
 
-In **this repo**:
+- **C1 — Repository bootstrap.** Vergil C++ profile, CMake, test framework,
+  lint / sanitiser / coverage pipeline green on an empty skeleton. Sequenced
+  first: it front-loads the toolchain risk before any gateway code exists.
+- **C2 — Outbound gateway.** §5.1.
+- **C3 — Inbound gateway.** §5.2 — content-opaque, circuit-breaking on an
+  unreachable receiver, 2080 resize-and-re-get, and **no** poison-message
+  facility (§4.5). Built with a mockable error seam so the conditions §9 marks
+  *mocked* are reachable in unit tests.
+- **C4 — Wire protocol.** §5.0, plus a **language-neutral conformance corpus**:
+  byte-level frame fixtures and a manifest of expected parse results and acks,
+  owned here and consumed as a test fixture by the Python side in the lab repo.
+  Deliberately small — a normal round trip, a maximum-size frame, a zero-length
+  body, the ack frame, and one split read to prove framing. Its job is to make
+  a divergence between the two implementations fail a *build*, not a live run.
+- **C5 — Counter-example.** §5.4; deferrable.
 
-6. **Reference sending application** — §5.3, with SEME-preserving `PDE` retry.
-7. **Failure-envelope document** — §6, with each window demonstrated live.
-8. **API findings** — Q1 and Q2 answered empirically, with the XMS adoption
-   note.
-9. **The argument document** — the reader-facing writeup carrying §3 and §4.
-10. **Duplicate-handling reference** — extending
-    `docs/swift-settlement-reference.md`, which covers none of this today.
-11. **`MQGET` failure-mode analysis** — a standalone reference, publishable on
-    its own. Every documented `MQGET` reason code classified on three axes:
-    *transient vs permanent*, *content-dependent vs not*, and — the axis that
-    makes it genuinely useful — **which `MQGMO` options make it reachable at
-    all**. 2080 exists only without `MQGMO_ACCEPT_TRUNCATED_MSG`; 2110/2119
-    exist only with `MQGMO_CONVERT`. Several conditions are ones you opt into.
-    Only the permanent-**and**-content-dependent cell is a poison message, and
-    the deliverable's verdict is whether that cell is empty for a content-opaque
-    consumer (§4.5). The thesis it carries: `MQGET` is not a one-or-zero call,
-    and the subtlety is where the failures live.
-12. **Lab deployment** — install the built binaries into the lab and wire them
-    to the queue managers.
-13. **Repo rename** — #272, sequenced late for completeness.
+### In this repo
 
-Deliverables 6, 7 and 10 require the tokenizer and generator to handle
-**envelope-level structure** (block 5 trailers, `23G`), which today handle
-block 4 only. That work is on the critical path of the central argument, not a
-nicety.
+- **L1 — Reference sending application.** §5.3, SQLite-backed, with
+  SEME-preserving `PDE` retry.
+- **L2 — Failure-envelope document.** §6, each row carrying its §9 evidence
+  tier.
+- **L3 — API findings.** Q1 and Q2 answered empirically, with the XMS adoption
+  note. **L2 depends on Q1** — it fixes whether O3/I4 report 2549 or 2009.
+- **L4 — The argument document.** The reader-facing writeup carrying §3 and §4.
+- **L5 — Duplicate-handling reference.** Extending
+  `docs/swift-settlement-reference.md`, which covers none of this today.
+- **L6 — `MQGET` failure-mode analysis.** A standalone reference, publishable
+  on its own. Every documented `MQGET` reason code classified on **four** axes:
+  - *transient vs permanent*;
+  - *content-dependent vs not*;
+  - **which `MQGMO` options make it reachable at all** — 2080 exists only
+    without `MQGMO_ACCEPT_TRUNCATED_MSG`, 2110/2119 only with `MQGMO_CONVERT`.
+    Several conditions are ones you opt into;
+  - **how it can be tested** — induced, mockable-only, or neither (§9's
+    tiers). Practical, and absent from every reference found.
+
+  Only the permanent-**and**-content-dependent cell is a poison message, and
+  this deliverable's verdict is whether that cell is empty for a content-opaque
+  consumer (§4.5). The thesis it carries: `MQGET` is not a one-or-zero call,
+  the subtlety is where the failures live, and knowing which subtleties you can
+  actually rehearse is part of knowing them.
+- **L7 — Lab deployment.** Install the built binaries into the lab and wire
+  them to the queue managers.
+- **L8 — Repo rename.** #272, sequenced late for completeness.
+
+**L1, L2 and L5 require the tokenizer and generator to handle envelope-level
+structure** (block 5 trailers, `23G`), which today handle block 4 only. That
+work sits on the critical path of the central argument, not off to the side.
+
+**If L6 fails** — if the analysis finds a permanent, content-dependent `MQGET`
+failure a content-opaque consumer can actually hit — then §4.5 weakens and §5.2
+must reinstate poison handling. That dependency is deliberate and worth stating:
+the design is falsifiable by its own deliverable.
 
 ---
 
 ## 9. Validation
 
-The argument is only worth what the live evidence behind it is worth. Each
-failure-envelope row is to be induced against the running 3+3 HA/DR lab and its
-observed behaviour recorded — including the ones that are uncomfortable, such
-as O4.
+The argument is only worth what the live evidence behind it is worth — and
+worth rather less if it overstates what was actually demonstrated.
+
+**Every row carries a stated evidence tier.** Not all MQ conditions can be
+manufactured on real infrastructure, and pretending otherwise would be the
+same sin this epic criticises:
+
+| Tier | Meaning | Examples |
+|---|---|---|
+| **Induced** | Produced deliberately on the live lab and observed | 2035 by revoking authority; 2009 by killing the TCP connection; 2016 by inhibiting `GET`; downstream outage by stopping the receiver |
+| **Mocked** | The *handler* is proven by injecting the condition in a unit test; the condition itself cannot be produced on real infrastructure | 2549 mid-call interruption, and the codes a queue manager raises only when something has gone badly wrong internally |
+| **Cited** | Neither inducible nor sensibly mockable; documented semantics only, with the source | rare internal-error paths |
+
+This boundary is **stated, not apologised for**. A mid-call interruption cannot
+be induced deterministically without interfering with the queue manager's
+internals, so 2549 is provably *handled* rather than provably *observed*. Being
+explicit about which is which is what makes the induced rows trustworthy.
+
+The mocking tier is an established technique here, not new work:
+`docs/coverage-exceptions-audit.md` records how the `pymqi` adapter reached
+100% coverage by injecting a fake module and scripting exactly what `Queue.get`
+raises. **The C++ gateway must be built with an equivalent seam** so its error
+paths are reachable in unit tests — a design constraint on the exemplar, not an
+afterthought, and one the gateway's structure has to accommodate from the
+start.
+
+Each failure-envelope row is then exercised at its tier and the observed
+behaviour recorded — including the uncomfortable ones, such as O4.
 
 - Induce each row; capture observed behaviour and reason codes.
 - **Downstream outage that must divert nothing.** Take the receiving
@@ -541,6 +623,12 @@ as O4.
 - **Oversized message.** Confirm the 2080 path resizes and re-gets, and
   separately confirm the declare-and-verify assertion that maximum frame size
   ≥ `MAXMSGL`.
+- **Custody survives a receiver restart.** Kill the receiving application
+  *immediately after it acknowledges* and before anything else happens; restart
+  it. Required observation: the record is present and the lifecycle continues.
+  This is the only scenario that distinguishes a genuine durable commit from an
+  in-memory one, and without it an unsound implementation passes every other
+  test here.
 - Exercise both gateways across an HA failover and a DR event.
 - Measure, do not assume, anything presented as a performance property.
 
