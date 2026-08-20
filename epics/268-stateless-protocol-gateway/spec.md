@@ -299,27 +299,40 @@ across threads, and one unit of work in flight at a time. That is the
 statelessness and simplicity argument, and it stands alone. In-order delivery
 is a *free consequence* of one consumer, **not the justification for it**.
 
-This distinction is deliberate, because the stronger claim — that the
-settlement lifecycle *requires* ordering — is **not currently evidenced, and is
-an open question** (§11.4). It must not be asserted until it is settled.
+This distinction is deliberate, and the standards research (§11.4) has now
+settled why: **the settlement lifecycle cannot require in-order processing,
+because the standard provides nothing that would make ordering knowable.**
 
-Our own `lifecycle.py` is order-tolerant (it advances monotonically along a
-reachability graph, so a late-arriving earlier status is a no-op), but that is
-**not evidence about SWIFT** — it is a proof-of-concept encoding our own
-assumption, and citing it to justify that assumption would be circular.
+- MT548's status subsequence (A2) contains **only** `25D` status code and
+  `24B` reason code. **There is no timestamp in it.** The single date/time in
+  mandatory sequence A is `98a::PREP`, defined as *"date/time at which the
+  message was prepared"* — composition time, not the time a status was assigned
+  or became effective.
+- The Category 5 guide defines **no superseding relationship** between multiple
+  advices for one instruction, and no usage rule or error code for an advice
+  arriving before its logical predecessor.
+- FIN's ISN/OSN sequencing is **session integrity** — loss and duplicate
+  detection between a logical terminal and the network, recovered by retrieval
+  — not an end-to-end guarantee that business events arrive in business order.
+  It is also an artefact a content-opaque gateway never exposes to the
+  application.
 
-What *is* established: FIN sequences delivery at the session layer via the OSN,
-assigned per delivery **attempt**; and MT548 carries field **98a PREP**, the
-status's own preparation date/time. That second fact matters for the receiver
-regardless of how the ordering question resolves — **the correct ordering key
-is the status's own business timestamp, not arrival order and not the queue
-manager's put-time.** Put-time is the transport's clock: a `PDE`
-retransmission carries an old business event with a new put-time and would sort
-into the wrong position. The proof-of-concept's put-time sort is wrong on that
-point today.
+**Therefore ordering must come from status semantics — the `25D` state machine
+and the linkage references — never from sorting on any in-message date.** There
+is no timestamp key to sort on; the field that looks like one means something
+else.
+
+This vindicates the fold in `lifecycle.py`: advancing **monotonically along a
+reachability graph**, so a late-arriving earlier status is a no-op, is not
+merely convenient — it is the only approach the standard supports. (Note the
+distinction: an earlier revision of this spec cited that module as *evidence*
+that ordering does not matter, which was circular — it is our own code encoding
+our own assumption. The code was right; the argument for it was not. The
+evidence is the standard, above.)
 
 Single-threading therefore rests on statelessness and simplicity, which stand
-on their own. Whether it could safely be relaxed is a question §11.4 answers.
+on their own — and the receiver's obligation is to **tolerate arbitrary advice
+order**, which §5.3 requires of it.
 
 - Connect once; open `GW.SEC.REPLY` once; hold both for the process lifetime.
 - `MQGET` under syncpoint, with a wait interval — held open in a loop, not
@@ -441,6 +454,22 @@ live.
 Sequenced last. If the epic runs short of time this is the piece to defer, as
 the argument stands without it; it converts the argument from persuasive to
 demonstrated.
+
+**The named anti-patterns**, as a generic exemplar — never a reproduction of
+shared source:
+
+| Anti-pattern | Why it is wrong |
+|---|---|
+| Objects opened **per message** rather than once at startup | Pure cost: an open and close per message, for a handle that could be held for the process lifetime |
+| **Gets outside syncpoint** | Loses messages. The destructive read is unrecoverable if anything downstream then fails (§4.4) |
+| **Puts outside syncpoint** | Defensible in isolation — conceded deliberately (§4.4), which is what makes the get-side criticism credible |
+| Reply queue opened **`MQOO_INPUT_SHARED`** | **Incoherent rather than incorrect.** It permits a second consumer, and multiple consumers race — priority governs queue position, not which consumer wins. The code takes no advantage of the concurrency it enables, while contradicting the sequential processing it appears to assume. Since ordering turns out not to be required (§11.4), the open is not a correctness defect; it is a design that has not decided what it wants |
+| **Stateful replay in the protocol layer** | The epic's central thesis (§3, §4) |
+
+The `MQOO_INPUT_SHARED` row is worth dwelling on in the writeup, because it is
+the most diagnostic. A shared open alongside an assumption of sequential
+processing suggests the two decisions were never reconciled — which is the
+pattern the whole epic is about, rather than any individual defect.
 
 ### 5.5 Where the code lives — two repositories
 
@@ -633,12 +662,15 @@ changes. **C** = the component repo, **L** = this lab repo.
   code's shared-open is a live defect or merely pointless (§5.4). Publishable
   on its own, and "no public statement found" is a legitimate result provided
   the search is documented.
-- **L10 — `98C::PREP` ordering-key fix.** #275. The correlator sorts response
-  streams on MQ put-time — the transport's clock — so a `PDE` retransmission
-  carries an old business event with a new put-time and sorts wrongly. Wrong
-  regardless of how L9 resolves, and it would **contaminate any ordering
-  evidence gathered with the current collector**, so it precedes the
-  ordering-sensitive validation work.
+- **L10 — Make ordering semantics honest.** #275. **Reframed** by L9's
+  findings: this was scoped as swapping the sort key to a business timestamp,
+  and no such timestamp exists in MT548 (§11.4). There is nothing to sort on,
+  so the work is to stop implying otherwise — keep put-time as what it
+  honestly is (**arrival order**, the only observable available), correct the
+  docstrings and any timeline output that presents arrival time as business
+  event time, and add a test that **shuffles a response stream and asserts the
+  terminal state is unchanged**. That test turns the standards finding into an
+  executable guarantee, which is worth more than the sort key ever was.
 
 **L1, L2 and L5 require the tokenizer and generator to handle envelope-level
 structure** (block 5 trailers, `23G`), which today handle block 4 only. That
@@ -758,31 +790,46 @@ assumed.
 3. **UETR.** Field 121 was mandated by SR2018 for the payments family. **No
    evidence was found** that it applies to category 5 securities messages, and
    this spec does not rely on it.
-4. **Message ordering — open, and load-bearing.** Whether the settlement
-   lifecycle genuinely requires in-order processing is **unresolved**, and it
-   gates the single-threaded inbound decision (§5.2). It must be settled from
-   primary sources, not from our own proof-of-concept.
+4. **Message ordering — largely resolved.** Settled against the SWIFT
+   Category 5 Message Reference Guide, FIN System Messages, and FIN Error
+   Codes (#274). Findings, data first:
 
-   *Established:* FIN sequences delivery at the session layer — the OSN is
-   assigned per delivery **attempt** on the receiver's output session, so gaps
-   and retransmissions are detectable. MT548 carries **98a PREP**, the status's
-   own preparation date/time, which is the correct ordering key for a receiver.
+   - **No status-effective timestamp exists.** MT548's status subsequence (A2)
+     carries only `25D` and `24B`. The sole date/time in mandatory sequence A
+     is `98a::PREP` — *"date/time at which the message was prepared"*, i.e.
+     composition time. A vendor-specific usage note describing PREP as the time
+     a status was assigned is **local practice, not the standard**, and must not
+     be generalised.
+   - **No superseding rule.** A search of the full Category 5 guide returns no
+     superseding relationship between advices, and the MT548 usage rules govern
+     only linkage references. There is no network-validated rule and no error
+     code for an advice arriving before its logical predecessor.
+   - **ISN/OSN is session integrity, not business ordering.** Sequence numbers
+     are strictly maintained between a logical terminal and the network, with
+     mismatches NAK'd, a sequence-gap timeout, and recovery by retrieval
+     (MT020 → MT021). That detects loss and duplication on a session; it does
+     not promise that business events arrive in business order — and a
+     content-opaque gateway never surfaces it to the application anyway.
 
-   *Unresolved:* whether SWIFT states an end-to-end in-sequence delivery
-   guarantee; and what the official expectation is for an application that
-   receives a status advice before its predecessor — is that an error to flag,
-   or an ordinary condition to absorb? Sources to pursue: the SWIFT Knowledge
-   Centre FIN service description and System Messages guides, and SMPG market
-   practice for MT548/MT537 (including its Pending Transaction Reporting
-   guidance).
+   *Consequences:* ordering must derive from **status semantics**, never from a
+   timestamp sort (§5.2); the receiver must **tolerate arbitrary advice order**
+   and absorb an early status rather than report it (§5.3); and the design's
+   order-tolerance is a standards requirement rather than a convenience.
 
-   *Why it matters beyond our design:* the sample C++ opens the reply queue
-   with `MQOO_INPUT_SHARED`, permitting a second consumer. Multiple consumers
-   **race** — priority governs queue position, not which consumer wins — so
-   that code destroys ordering by construction while apparently assuming
-   ordering holds. If ordering does not matter, the shared open is merely
-   pointless; if it does, it is a live defect. Either way the answer belongs in
-   the argument, and the shared open is a named anti-pattern for §5.4.
+   *Still open, narrowly:* whether a **positive** end-to-end ordering assurance
+   is stated anywhere. If it exists it would be in the FIN Service Description
+   or Operations Guide, which we have not obtained; the three documents read
+   contain no such statement. SMPG market practice for MT548/MT537 remains
+   worth a look for business-layer colour, but no longer gates anything.
+
+   *The anti-pattern this settles:* the sample C++ opens the reply queue with
+   `MQOO_INPUT_SHARED`, permitting a second consumer. Multiple consumers
+   **race** — priority governs queue position, not which consumer wins. Since
+   ordering turns out not to be required, the shared open is not a correctness
+   defect; it is **incoherent**, because the code takes no advantage of the
+   concurrency it enables while contradicting the sequential processing it
+   appears to assume. That is a sharper criticism than "it is a bug", and a
+   fairer one (§5.4).
 
 ---
 
