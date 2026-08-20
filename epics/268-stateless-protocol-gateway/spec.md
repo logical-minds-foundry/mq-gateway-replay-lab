@@ -291,9 +291,27 @@ The gateway's contract, stated for the caller:
 
 ### 5.2 Inbound gateway
 
-A single-threaded blocking get-loop. The reply queue is ordered and
-concurrency here would destroy the ordering the settlement lifecycle depends
-on.
+A single-threaded blocking get-loop.
+
+**Why single-threaded — and what that reasoning does *not* rest on.** One
+consumer means no coordination between consumers, no partial failure spread
+across threads, and one unit of work in flight at a time. That is the
+statelessness and simplicity argument, and it stands alone. In-order delivery
+is a *free consequence* of one consumer, **not the justification for it**.
+
+This distinction is deliberate, because the stronger claim would be false here.
+The settlement model in this repo does **not** depend on arrival order:
+`lifecycle.py` advances **monotonically along a reachability graph** — a state
+is applied only if it is reachable, so a late-arriving earlier status is a
+no-op — and the fold consumes responses ordered by the queue manager's
+*put-time*, an explicit sort rather than a trust in delivery sequence. Nor does
+FIN guarantee end-to-end ordering; it is store-and-forward. A design that
+depended on ordering would be depending on a guarantee the network does not
+give.
+
+That the design is order-tolerant is a **strength to state, not a weakness to
+hide**: it means single-threading is chosen for simplicity and can be revisited
+on its own merits, rather than being load-bearing for correctness.
 
 - Connect once; open `GW.SEC.REPLY` once; hold both for the process lifetime.
 - `MQGET` under syncpoint, with a wait interval — held open in a loop, not
@@ -306,7 +324,11 @@ on.
   eliminates the `MQRC_FORMAT_ERROR` / `MQRC_NOT_CONVERTED` class outright by
   never requesting the conversion that produces it.
 - **Commit the GET only on positive acknowledgement from the receiving
-  application** (custody transfer, §5.0).
+  application** (custody transfer, §5.0). **The wait for that acknowledgement
+  must be bounded.** A receiver that dies is detected by the socket; a receiver
+  that *hangs* — a half-open connection, a wedged thread — is not, and an
+  unbounded wait would hold the unit of work open indefinitely. A timeout is
+  treated exactly as unreachable: back out, circuit-break, retry.
 - **Exactly one condition causes a backout: the receiving application is
   unreachable or does not answer.** Nothing else does. On that condition, back
   out **and halt the consumer**, reconnecting with backoff before getting
@@ -327,6 +349,37 @@ on.
 
 This path is stateless because **MQ holds the state**. The message's presence
 on the queue *is* the record that it has not yet been accepted downstream.
+
+#### The objection this design must answer head-on
+
+> "You are holding a transaction open across a network call to a third party."
+
+Yes. Deliberately. This is the most likely reflexive objection from a competent
+reviewer, because "never hold a transaction open across I/O" is a rule most
+engineers carry in their spine — and it is a good rule. It is stated here
+rather than left for a reader to raise, because the answer is the strongest
+proof point in the inbound design.
+
+**The alternative is strictly worse.** Committing before delivering means the
+message is destroyed while its delivery is still unproven; any downstream
+failure in that window loses it, with nothing to replay from — the exact hole
+this entire specification exists to close. The unit of work is not incidental
+to the design, it *is* the recovery mechanism (§4.4). Shortening it to satisfy
+a rule of thumb would reintroduce the defect.
+
+**And the usual costs do not apply here.** The rule exists because open
+transactions hold locks, block other work, and grow logs:
+
+- *Contention*: none. One consumer, one queue, no competing getter to block.
+- *Scale of the unit of work*: one message. `MaxUncommittedMsgs` is nowhere
+  near reach.
+- *Duration*: bounded by the ack timeout above, so it is a short, capped
+  interval — not an open-ended hold.
+- *Log pressure*: proportional to duration and volume, both small.
+
+The honest cost is throughput: the inbound path is serial by construction, at
+roughly one message per get-deliver-ack-commit cycle. §9 measures that against
+expected reply volume rather than assuming it clears.
 
 ### 5.3 Reference sending application
 
@@ -629,6 +682,14 @@ behaviour recorded — including the uncomfortable ones, such as O4.
   This is the only scenario that distinguishes a genuine durable commit from an
   in-memory one, and without it an unsound implementation passes every other
   test here.
+- **Inbound throughput ceiling.** The inbound path is serial by construction
+  (§5.2): one message per get-deliver-ack-commit cycle, with the network
+  round-trip inside the unit of work. Measure that rate and state it against
+  the expected reply volume, with the margin shown. A confirmation flow is
+  almost certainly nowhere near the ceiling — but "almost certainly" is exactly
+  the kind of claim this document refuses everywhere else, and an unmeasured
+  serial bottleneck is a free objection handed to a reviewer. The repo's
+  existing `scale_bench.py` and `docs/scale-analysis.md` are the precedent.
 - Exercise both gateways across an HA failover and a DR event.
 - Measure, do not assume, anything presented as a performance property.
 
