@@ -67,7 +67,7 @@ to be shortened.
 | 1 | Reference documents | T1–T3 | No build dependency; publishable alone; two are already substantially researched |
 | 2 | Foundations | T4–T6 | Toolchain risk front-loaded; protocol fixed before either side implements it |
 | 3 | Build | T7–T9 | Gateways and the reference app |
-| 4 | Deploy and measure | T10–T13 | Evidence gathering against the live lab |
+| 4 | Deploy and measure | T10–T13, incl. **T12b** | Evidence gathering against the live lab |
 | 5 | Synthesis | T14–T15 | The arithmetic and the argument, which need the measurements |
 | 6 | Tail | T16–T18 | Counter-example, rename, closing bookends |
 
@@ -572,11 +572,31 @@ returns a whole frame.
 Encode and decode only. **No socket I/O in this file** — that lives in
 `transport.cpp` so the codec is testable without a network.
 
-- [ ] **Step 5: Run until green, then commit**
+- [ ] **Step 5: Write the failing frame-size floor test**
+
+```text
+Given the configured maximum frame size
+And the MAXMSGL of the reply queue it will carry
+Then maximum frame size MUST be >= MAXMSGL
+```
+
+Assert it against the **actual** queue attribute, read from configuration
+rather than hard-coded, so a later `MAXMSGL` increase fails the build.
+
+This is the declare-and-verify assertion from spec §5.0, and it is checked
+here rather than at drill time on purpose: it is a static relationship between
+a protocol constant and a queue attribute. If the frame ceiling sat below
+`MAXMSGL`, messages between the two limits would be undeliverable forever and
+the receiving application would never see them — **a poison class manufactured
+by the one layer specified to create none**. Catching that when the corpus is
+built beats catching it during a drill, and an unverified assertion is exactly
+what §4.6 objects to.
+
+- [ ] **Step 6: Run until green, then commit**
 
 ```bash
 vrg-container-run -- vrg-validate
-vrg-commit --type feat --scope protocol --message "wire frame codec + language-neutral conformance corpus"
+vrg-commit --type feat --scope protocol --message "wire frame codec, conformance corpus, and the MAXMSGL frame-size floor"
 ```
 
 ---
@@ -980,8 +1000,108 @@ recorded; `docs/gateway-failure-envelope.md` written from what was seen.
 - [ ] **Step 8: Inbound throughput ceiling** — measure the serial rate and
       state it against expected reply volume, with margin shown.
 
+- [ ] **Step 8a: Downstream outage that must divert nothing.** Take the
+      receiving application down for **longer than any plausible backout
+      threshold would have been** — duration is the whole point, since a short
+      outage does not test this. Required observation: the consumer halts and
+      backs off, queue depth grows, and **no message is diverted anywhere**. On
+      recovery the flow resumes with nothing lost and nothing duplicated beyond
+      what §6 I2 predicts. **This is the scenario that validates §4.5** — the
+      empirical proof that removing `BOTHRESH`/`BOQNAME` was safe rather than
+      merely convenient.
+
+- [ ] **Step 8b: Oversized message.** Put a message larger than the gateway's
+      initial `MQGET` buffer. Confirm the 2080 path reads `DataLength`, resizes
+      and re-gets, and that the message is delivered rather than stuck. (The
+      static `MAXMSGL` ≥ frame-size assertion is checked at build time in T6
+      step 5, not here.)
+
+- [ ] **Step 8c: Start with the inward route already broken.** Bring an
+      instance up with no route to the receiving application. Confirm it never
+      opens the queue, reports `CONNECTING_APP` in the T11 stream, and does not
+      become a contender — i.e. a healthy standby still wins the open. T8
+      step 1 proves the code path; this proves the *deployed* instance behaves
+      that way, which is a claim about configuration rather than logic.
+
 - [ ] **Step 9: Write the document, tagging every row with its tier**
       (induced / mocked / cited), and record `Outcome: SUCCESS` or `FAILURE`.
+      **Blocked on T12b** — the O3/I4 rows describe connection-interruption
+      windows, and the failover drills are what actually enter them. Writing
+      the envelope before T12b would document windows nobody visited.
+
+---
+
+## Task 12b: HA failover and DR drills — **validation task**
+
+**Deliverable:** Both gateways exercised across a Native HA failover and a DR
+event, with observations recorded — including the empirical answer to §7 Q2.
+
+**Kind:** `validation` — run with `vergil:issue-validate`.
+
+**Blocked-by:** T10, T11. **Blocks T12 step 9** (the envelope document cannot
+be written without these observations) and **T13** (Q2's answer comes from
+here).
+
+Split from T12 deliberately. Drills are **re-run** as the gateway changes, and
+a task that also writes a document cannot be re-run cleanly. Keeping this
+separate also gives a partial failure somewhere granular to land: an eleven-
+step task reduces to one `Outcome: SUCCESS` comment that hides which scenario
+failed.
+
+- [ ] **Step 1: Precondition self-check**
+
+Deployment healthy with one inbound `ACTIVE` and two `STANDBY`; outbound
+instances accepting requests; the base lab's HA/DR drill machinery available;
+a traffic generator able to sustain flow on both paths. If unmet: comment
+"blocked: preconditions not met" and stop. Never fabricate a result.
+
+- [ ] **Step 2: Establish a measured baseline**
+
+Start steady traffic on both paths. Record the rate, the instance states, and
+the queue depths **before** touching anything — a drill without a baseline
+produces anecdotes rather than measurements, and these results must be
+comparable across re-runs.
+
+- [ ] **Step 3: Native HA failover with traffic in flight**
+
+Fail over the app-facing queue manager while both paths are actively carrying
+messages. Record for each gateway:
+
+- the reason code(s) observed, verbatim;
+- whether any message was **lost** (the answer must be none);
+- whether any message was **duplicated**, and whether it matches what §6 I2
+  predicts;
+- the state transitions each instance passed through, from the T11 stream;
+- wall-clock time until each path resumed.
+
+- [ ] **Step 4: Capture the Q2 answer deliberately**
+
+§7 Q2's working hypothesis is that **reconnection re-establishes a connection,
+never a unit of work**. Determine it by observation, not inference: was an
+in-flight unit of work preserved across the failover, or rolled back?
+
+This is the single most valuable observation in the task. If the hypothesis
+holds, the recovery logic is mandatory regardless of API, the C++ classes cost
+boilerplate rather than correctness, and §7 Q1 stops being load-bearing.
+Record what was seen even if it contradicts the hypothesis — **especially**
+then.
+
+- [ ] **Step 5: DR event**
+
+Repeat steps 3 and 4 for a DR scenario. Record the same observations, plus any
+behaviour that differs from the HA case.
+
+- [ ] **Step 6: Reconcile against §6**
+
+Confirm or correct the O3 and I4 rows, and record **which reason code actually
+appeared** — 2549 or 2009. That resolves the §6 note left open pending §7 Q1
+and feeds T13.
+
+- [ ] **Step 7: Record parameters and outcome**
+
+Record the drill parameters used (`HBINT`, retry intervals, traffic rate) so a
+re-run is comparable, then `Outcome: SUCCESS` with the observations, or
+`Outcome: FAILURE` with what was seen. The task stays open on failure.
 
 ---
 
@@ -990,7 +1110,8 @@ recorded; `docs/gateway-failure-envelope.md` written from what was seen.
 **Deliverable:** `docs/mqi-cpp-api-findings.md` — Q1 and Q2 answered
 empirically.
 
-**Blocked-by:** T4 (which records the header), T12 (which observes the codes)
+**Blocked-by:** T4 (which records the header), **T12b** (which observes the
+codes under failover — the only condition that produces them)
 
 - [ ] **Step 1: State Q1's answer from the shipped header** — does
       `setConnectOptions` accept `MQCNO_RECONNECT`? Quote the header's option
@@ -1118,6 +1239,28 @@ keyed to the old path. Sequenced late to avoid churning in-flight branches.
 L4→T15, L5→T3, L6→T1, L7→T10, L8→T17, L9→T2, L10→T5, L11→T14, L12→T12,
 L13→T10, L14→T11. Plus T0 for the known-red baseline and T18 for the bookends.
 **All 19 deliverables are covered.**
+
+**§9 scenario coverage**, checked separately because deliverable coverage did
+not imply it — the first alignment pass found four §9 scenarios with no step:
+
+| §9 scenario | Task |
+|---|---|
+| Induce each envelope row | T12 step 2–3 |
+| Unparseable message absorbed | T12 step 3 |
+| Severed inward route | T12 step 4 |
+| Standby takeover, `HBINT` tuned and default | T12 step 5 |
+| Restart-into-2042 | T12 step 6 |
+| Custody survives receiver restart | T12 step 7 |
+| Inbound throughput ceiling | T12 step 8 |
+| **HA failover and DR event** | **T12b** |
+| Downstream outage diverting nothing | T12 step 8a |
+| Oversized message — 2080 resize live | T12 step 8b |
+| `MAXMSGL` ≥ frame size — static assertion | **T6 step 5** (build time, not drill time) |
+| Start with inward route broken (live) | T12 step 8c; T8 step 1 (unit) |
+
+**All eleven §9 scenarios are now covered.** The split of the oversized-message
+requirement is deliberate: the static frame-size floor is a build-time
+assertion, while the 2080 resize path needs a live message.
 
 **Known gaps, stated rather than hidden:**
 
