@@ -1,0 +1,62 @@
+---
+# The counterparty tag selecting the queue set (matches gwlab's QueueSet).
+counterparty: CPB
+
+# The counterparty's own queue manager, reached over the lab's EXISTING
+# inter-QM link (transmission queue + channel). svc_qmgr names both the
+# QREMOTE's RQMNAME/XMITQ below and the link this role declare-and-verifies
+# (never creates) at the bottom of tasks/main.yml — issue #56.
+svc_qmgr: SVCQM
+
+# Named queues (match gwlab's QueueSet). GW.<counterparty>.REQUEST is now a
+# QALIAS — the app's transparent put target — rather than a QLOCAL; the app
+# (gwlab) is unchanged because the name it puts to is unchanged.
+q_request: "GW.{{ counterparty }}.REQUEST"
+q_request_audit: "GW.{{ counterparty }}.REQUEST.AUDIT"
+q_request_remote: "GW.{{ counterparty }}.REQUEST.REMOTE"
+q_reply: "GW.{{ counterparty }}.REPLY"
+q_reply_audit: "GW.{{ counterparty }}.REPLY.AUDIT"
+
+# The remote object model (issue #56, proven live in #54): the app puts to the
+# QALIAS q_request, which resolves transparently to q_request_audit (the
+# retained-original outbound copy — same role it always had). q_request_audit
+# STREAMQ's a MUSTDUP duplicate to q_request_remote, a QREMOTE that hands off
+# to the counterparty's queue manager (svc_qmgr) over the lab's EXISTING
+# transmission queue + channel — declare-and-verified, never created. Inbound
+# is unchanged: q_reply STREAMQ's to q_reply_audit.
+#
+# Per the parasite / boundary rule these QLOCAL/QALIAS/QREMOTE objects are the
+# ONLY MQ objects gw_queues creates; the queue manager, the counterparty QM,
+# and the inter-QM transmission queue + channel belong to the lab and are
+# declare-and-verified, never mutated.
+
+# The audit QLOCALs — CAPEXPRY-capped rolling ledgers: the retained-original
+# outbound copy and the authoritative inbound "processed" copy.
+gw_audit_queues:
+  - "{{ q_request_audit }}"
+  - "{{ q_reply_audit }}"
+
+# [live_queue, streamq_target] — each live queue MUSTDUP-copies to its stream
+# target. Outbound streams the retained original to the counterparty landing
+# queue; inbound streams the reply to its audit copy (unchanged pattern).
+gw_streams:
+  - ["{{ q_request_audit }}", "{{ q_request_remote }}"]
+  - ["{{ q_reply }}", "{{ q_reply_audit }}"]
+
+# Sizing for production-scale volume (capacity analysis in the epic). A day of
+# audit traffic at high volume far exceeds the default MAXDEPTH(5000). The single
+# queue-file limit is NOT a concern: MAXFSIZE(DEFAULT) is ~2 TB, well above a
+# day of ~200 KB messages.
+gw_max_depth: 999999999
+
+# Rolling intraday retention on the audit queues. The streamed copy starts
+# MQEI_UNLIMITED, and CAPEXPRY caps it to 24h (864000 tenths of a second).
+# Expired copies are removed by the periodic reconcile browse (or the qm.ini
+# ExpiryInterval scanner) — which retires the start-of-day / end-of-day
+# clearing. (ExpiryInterval is a queue-manager setting we declare-and-verify,
+# never mutate — the parasite rule.)
+gw_audit_capexpry: 864000
+
+# qmgr_name is intentionally left unset — it must be provided at apply time (the
+# lab's running queue manager). A missing value fails loudly (see tasks), so a
+# mis-targeted apply never silently hits the wrong box.

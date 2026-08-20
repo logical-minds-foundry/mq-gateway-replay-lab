@@ -7,13 +7,13 @@
 # (parasite rule).
 #
 # Piggyback apply: this play targets the shared lab's inventory, and — because
-# gw-queues writes MQSC via runmqsc against a live queue manager — it must run
+# gw_queues writes MQSC via runmqsc against a live queue manager — it must run
 # against the ACTIVE Native-HA node specifically (a passive node has no running
 # qmgr to target). For now the operator passes the active host explicitly
 # (lab_qm_host); a follow-up will auto-detect the active node instead.
 #
 # qmgr_name means a different live queue manager in this play than in the
-# gw-svc-queues play below; since ansible-playbook -e is a GLOBAL override
+# gw_svc_queues play below; since ansible-playbook -e is a GLOBAL override
 # (not play-scoped), apply each play as its own invocation via --limit — never
 # pass one qmgr_name for both plays in a single command.
 #
@@ -24,7 +24,7 @@
   hosts: gateway_qm
   gather_facts: false
   roles:
-    - gw-queues
+    - gw_queues
 
 # Provision the SWIFT securities-settlement (v2) audit queues on the same lab
 # queue manager: the parallel GW.SEC.* streaming remote model with a MULTI-DAY
@@ -32,7 +32,7 @@
 # experiment's own GW.SEC.* objects and declare-and-verifies the queue manager
 # and the existing inter-QM link — never mutates anything the lab owns.
 #
-# Same active-node piggyback apply and per-play qmgr_name caveat as gw-queues
+# Same active-node piggyback apply and per-play qmgr_name caveat as gw_queues
 # above (apply as its OWN invocation via --limit; see ansible/README.md):
 #   ansible-playbook -i inventory/lab.yml site.yml --limit gateway_qm \
 #     -e qmgr_name=<LAB_QM> -e lab_qm_host=<ACTIVE_NODE>
@@ -40,7 +40,7 @@
   hosts: gateway_qm
   gather_facts: false
   roles:
-    - gw-sec-queues
+    - gw_sec_queues
 
 # Provision the counterparty's own gateway objects on SVCQM (the their-side
 # half of the same #56 remote topology): the landing queue our request lands
@@ -64,13 +64,13 @@
   hosts: gateway_svc_qm
   gather_facts: false
   roles:
-    - gw-svc-queues
+    - gw_svc_queues
 
 # Provision the counterparty's own SWIFT securities-settlement (v2) gateway
 # objects on SVCQM (the their-side half of the same #56 remote topology, epic
 # #65): the landing queue our streamed GW.SEC instructions arrive on, and the
 # QREMOTE that routes the responder's replies back to our GW.SEC.REPLY. Like the
-# v1 gw-svc-queues play above, this is the counterparty side, and it still obeys
+# v1 gw_svc_queues play above, this is the counterparty side, and it still obeys
 # the parasite rule: it creates ONLY its own GW.SEC.* objects on SVCQM and
 # declare-and-verifies the existing return XMITQ/channel, never touching
 # anything else on that box.
@@ -89,7 +89,7 @@
   hosts: gateway_svc_qm
   gather_facts: false
   roles:
-    - gw-sec-svc-queues
+    - gw_sec_svc_queues
 
 # Deploy the gateway's observability: the reconcile exporter (a service beside the
 # queue manager), its Prometheus file_sd target, and one board per queue manager
@@ -101,7 +101,7 @@
   hosts: gateway_obs
   gather_facts: false
   roles:
-    - gw-observability
+    - gw_observability
 
 # Deploy the v2 SWIFT settlement observability: the swift exporter (a systemd
 # service on a distinct port, TLS client-mode to the app queue manager), its own
@@ -113,7 +113,7 @@
   hosts: gateway_obs
   gather_facts: false
   roles:
-    - gw-sec-observability
+    - gw_sec_observability
 
 # Deploy the streaming settlement collector: the box-only stateful reader that
 # browses both GW.SEC.* audit queues as the mqmon observer identity (MON.SVRCONN)
@@ -124,4 +124,4 @@
   hosts: gateway_obs
   gather_facts: false
   roles:
-    - gw-sec-collector
+    - gw_sec_collector

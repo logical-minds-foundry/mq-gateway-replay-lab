@@ -2,7 +2,7 @@
 
 The primary intraday-retention mechanism is now the queue manager itself:
 ``CAPEXPRY`` on the audit queues gives every streamed copy a rolling 24h TTL
-(set in the gw-queues Ansible role), verified live on the lab (see issue #27). So
+(set in the gw_queues Ansible role), verified live on the lab (see issue #27). So
 nobody has to remember to clear the audit queues — the queue manager bounds it.
 
 These explicit clear operations are retained as the **fallback** for queue

@@ -1,0 +1,93 @@
+---
+# The SWIFT securities-settlement (v2) audit flow. Parallel to gw_queues (the v1
+# request/reply flow), but for MT540-548 body-parsing: the same proven streaming
+# remote model (issue #56) with its own GW.SEC.* objects and a MULTI-DAY audit
+# retention window, because a settlement lifecycle spans days (epic #65 spec
+# §4.4). Names match gwlab.swift.swiftconfig.SwiftQueueSet.
+
+# The counterparty's own queue manager, reached over the lab's EXISTING inter-QM
+# link (transmission queue + channel) — declare-and-verified, never created.
+svc_qmgr: SVCQM
+
+# Named queues. GW.SEC.INSTRUCT is a QALIAS — the app's transparent put target
+# for outbound MT540-543 instructions — onto the retained-original outbound
+# audit GW.SEC.INSTRUCT.AUDIT. Inbound MT548 / MT544-547 responses arrive on
+# GW.SEC.REPLY and stream to the audit GW.SEC.STATUS.AUDIT.
+q_instruct: "GW.SEC.INSTRUCT"
+q_instruct_audit: "GW.SEC.INSTRUCT.AUDIT"
+q_instruct_remote: "GW.SEC.INSTRUCT.REMOTE"
+q_reply: "GW.SEC.REPLY"
+q_status_audit: "GW.SEC.STATUS.AUDIT"
+
+# The remote object model (issue #56): the app puts to the QALIAS q_instruct,
+# which resolves transparently to q_instruct_audit (the retained-original
+# outbound copy). q_instruct_audit STREAMQ's a MUSTDUP duplicate to
+# q_instruct_remote, a QREMOTE that hands off to the counterparty's queue
+# manager (svc_qmgr) over the lab's EXISTING transmission queue + channel.
+# Inbound: q_reply STREAMQ's to q_status_audit.
+#
+# Per the parasite / boundary rule these QLOCAL/QALIAS/QREMOTE objects are the
+# ONLY MQ objects gw_sec_queues creates; the queue manager, the counterparty QM,
+# and the inter-QM transmission queue + channel belong to the lab and are
+# declare-and-verified, never mutated.
+
+# The audit QLOCALs — CAPEXPRY-capped rolling ledgers the collector browses: the
+# retained-original outbound instructions and the inbound response copies.
+gw_sec_audit_queues:
+  - "{{ q_instruct_audit }}"
+  - "{{ q_status_audit }}"
+
+# [live_queue, streamq_target] — each live queue MUSTDUP-copies to its stream
+# target. Outbound streams the retained original to the counterparty landing
+# queue; inbound streams the response to its audit copy.
+gw_sec_streams:
+  - ["{{ q_instruct_audit }}", "{{ q_instruct_remote }}"]
+  - ["{{ q_reply }}", "{{ q_status_audit }}"]
+
+# Sizing for production-scale volume. A settlement horizon of audit traffic far
+# exceeds the default MAXDEPTH(5000). The single queue-file limit is not a
+# concern: MAXFSIZE(DEFAULT) is ~2 TB, well above a horizon of settlement traffic.
+gw_sec_max_depth: 999999999
+
+# MULTI-DAY retention (spec §4.4, §7): unlike v1's 24h cap, CAPEXPRY here holds
+# the OPEN SETTLEMENT WINDOW so a late (T+2) confirmation still finds its T
+# instruction in the audit — otherwise it would be mis-flagged as an orphan.
+# ~3 business days = gw_sec_horizon_days * 864000 tenths of a second. Task #88
+# sizes gw_sec_horizon_days against the real settlement calendar and volumes.
+gw_sec_horizon_days: 3
+gw_sec_capexpry: "{{ gw_sec_horizon_days * 864000 }}"
+
+# qmgr_name is intentionally left unset — it must be provided at apply time (the
+# lab's running queue manager). A missing value fails loudly (see tasks), so a
+# mis-targeted apply never silently hits the wrong box.
+
+# --- least-privilege authority model (epic #235) — mirrors the base lab -------
+# Reuses the base lab's Stage-2 groups (mqapp/mqmon/mqsvc); grants via setmqaut -g
+# on the queues this repo owns. The audit ledgers hold the application's own message
+# history: they are QM-written (STREAMQ), so the only write is the app's retained-
+# original put to the outbound audit — no client +get/+setall/+clr/+dlt. BOTH the
+# observers (mqmon) and the application (mqapp) get READ-ONLY access (browse+inq) to
+# that history: the audit queues serve out-of-band monitoring AND the app viewing its
+# own history — the collector is merely one example of the passive readers they enable.
+# Shape mirrors base lab authz.yml.
+gw_sec_observer_group: mqmon    # MON.SVRCONN observers (collector + exporter)
+gw_sec_app_group: mqapp         # APP.SVRCONN application
+gw_sec_mca_group: mqsvc         # the inter-QM return MCA writes GW.SEC.REPLY
+
+gw_sec_grants:
+  - { group: "{{ gw_sec_observer_group }}", object: "{{ q_instruct_audit }}", authorities: "+browse +inq +dsp" }
+  - { group: "{{ gw_sec_observer_group }}", object: "{{ q_status_audit }}", authorities: "+browse +inq +dsp" }
+  - { group: "{{ gw_sec_app_group }}", object: "{{ q_instruct }}", authorities: "+put" }
+  # The app puts the retained original here AND may read its own history (browse+inq),
+  # read-only — never +get (that would consume the retained original).
+  - { group: "{{ gw_sec_app_group }}", object: "{{ q_instruct_audit }}", authorities: "+put +browse +inq" }
+  # The inbound status history is QM-written (STREAMQ); the app reads it read-only.
+  - { group: "{{ gw_sec_app_group }}", object: "{{ q_status_audit }}", authorities: "+browse +inq" }
+  # The reply queue is the real-time get/put flow, NOT a history: the app gets from
+  # it (+inq for attributes) but must NOT browse it — browsing a live in-flight queue
+  # is a performance anti-pattern. Browse belongs on the audit ledgers, never here.
+  - { group: "{{ gw_sec_app_group }}", object: "{{ q_reply }}", authorities: "+get +inq" }
+  # This role owns/defines GW.SEC.REPLY (q_reply), so the return MCA's context grant
+  # lands here: under PUTAUT(DEF) the inter-QM return MCA opens the reply with
+  # MQOO_SET_ALL_CONTEXT, so mqsvc needs +put +setall to write inbound replies.
+  - { group: "{{ gw_sec_mca_group }}", object: "{{ q_reply }}", authorities: "+put +setall" }
