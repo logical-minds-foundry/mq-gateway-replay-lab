@@ -628,6 +628,17 @@ changes. **C** = the component repo, **L** = this lab repo.
 - **L7 — Lab deployment.** Install the built binaries into the lab and wire
   them to the queue managers.
 - **L8 — Repo rename.** #272, sequenced late for completeness.
+- **L9 — SWIFT ordering research.** #274. **Sequenced early**: it resolves
+  §11.4, gates §5.2's threading decision, and determines whether the sample
+  code's shared-open is a live defect or merely pointless (§5.4). Publishable
+  on its own, and "no public statement found" is a legitimate result provided
+  the search is documented.
+- **L10 — `98C::PREP` ordering-key fix.** #275. The correlator sorts response
+  streams on MQ put-time — the transport's clock — so a `PDE` retransmission
+  carries an old business event with a new put-time and sorts wrongly. Wrong
+  regardless of how L9 resolves, and it would **contaminate any ordering
+  evidence gathered with the current collector**, so it precedes the
+  ordering-sensitive validation work.
 
 **L1, L2 and L5 require the tokenizer and generator to handle envelope-level
 structure** (block 5 trailers, `23G`), which today handle block 4 only. That
