@@ -299,19 +299,27 @@ across threads, and one unit of work in flight at a time. That is the
 statelessness and simplicity argument, and it stands alone. In-order delivery
 is a *free consequence* of one consumer, **not the justification for it**.
 
-This distinction is deliberate, because the stronger claim would be false here.
-The settlement model in this repo does **not** depend on arrival order:
-`lifecycle.py` advances **monotonically along a reachability graph** — a state
-is applied only if it is reachable, so a late-arriving earlier status is a
-no-op — and the fold consumes responses ordered by the queue manager's
-*put-time*, an explicit sort rather than a trust in delivery sequence. Nor does
-FIN guarantee end-to-end ordering; it is store-and-forward. A design that
-depended on ordering would be depending on a guarantee the network does not
-give.
+This distinction is deliberate, because the stronger claim — that the
+settlement lifecycle *requires* ordering — is **not currently evidenced, and is
+an open question** (§11.4). It must not be asserted until it is settled.
 
-That the design is order-tolerant is a **strength to state, not a weakness to
-hide**: it means single-threading is chosen for simplicity and can be revisited
-on its own merits, rather than being load-bearing for correctness.
+Our own `lifecycle.py` is order-tolerant (it advances monotonically along a
+reachability graph, so a late-arriving earlier status is a no-op), but that is
+**not evidence about SWIFT** — it is a proof-of-concept encoding our own
+assumption, and citing it to justify that assumption would be circular.
+
+What *is* established: FIN sequences delivery at the session layer via the OSN,
+assigned per delivery **attempt**; and MT548 carries field **98a PREP**, the
+status's own preparation date/time. That second fact matters for the receiver
+regardless of how the ordering question resolves — **the correct ordering key
+is the status's own business timestamp, not arrival order and not the queue
+manager's put-time.** Put-time is the transport's clock: a `PDE`
+retransmission carries an old business event with a new put-time and would sort
+into the wrong position. The proof-of-concept's put-time sort is wrong on that
+point today.
+
+Single-threading therefore rests on statelessness and simplicity, which stand
+on their own. Whether it could safely be relaxed is a question §11.4 answers.
 
 - Connect once; open `GW.SEC.REPLY` once; hold both for the process lifetime.
 - `MQGET` under syncpoint, with a wait interval — held open in a loop, not
@@ -739,6 +747,31 @@ assumed.
 3. **UETR.** Field 121 was mandated by SR2018 for the payments family. **No
    evidence was found** that it applies to category 5 securities messages, and
    this spec does not rely on it.
+4. **Message ordering — open, and load-bearing.** Whether the settlement
+   lifecycle genuinely requires in-order processing is **unresolved**, and it
+   gates the single-threaded inbound decision (§5.2). It must be settled from
+   primary sources, not from our own proof-of-concept.
+
+   *Established:* FIN sequences delivery at the session layer — the OSN is
+   assigned per delivery **attempt** on the receiver's output session, so gaps
+   and retransmissions are detectable. MT548 carries **98a PREP**, the status's
+   own preparation date/time, which is the correct ordering key for a receiver.
+
+   *Unresolved:* whether SWIFT states an end-to-end in-sequence delivery
+   guarantee; and what the official expectation is for an application that
+   receives a status advice before its predecessor — is that an error to flag,
+   or an ordinary condition to absorb? Sources to pursue: the SWIFT Knowledge
+   Centre FIN service description and System Messages guides, and SMPG market
+   practice for MT548/MT537 (including its Pending Transaction Reporting
+   guidance).
+
+   *Why it matters beyond our design:* the sample C++ opens the reply queue
+   with `MQOO_INPUT_SHARED`, permitting a second consumer. Multiple consumers
+   **race** — priority governs queue position, not which consumer wins — so
+   that code destroys ordering by construction while apparently assuming
+   ordering holds. If ordering does not matter, the shared open is merely
+   pointless; if it does, it is a live defect. Either way the answer belongs in
+   the argument, and the shared open is a named anti-pattern for §5.4.
 
 ---
 
