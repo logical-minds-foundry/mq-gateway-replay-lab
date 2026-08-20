@@ -1,11 +1,11 @@
 ---
-- name: reload prometheus
+- name: Reload prometheus
   ansible.builtin.systemd:
     name: prometheus
     state: reloaded
   become: true
 
-- name: restart mq exporter
+- name: Restart mq exporter
   ansible.builtin.systemd:
     name: "{{ gw_sec_mq_exporter_service }}"
     state: restarted

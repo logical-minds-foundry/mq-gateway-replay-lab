@@ -91,4 +91,4 @@
     marker: "# {mark} gwlab-collector scrape job (added by the gateway parasite)"
     block: "  - job_name: gwlab-collector\n    file_sd_configs:\n      - files: [\"{{ gw_prometheus_targets_dir }}/gwlab-collector.json\"]\n"
   become: true
-  notify: reload prometheus
+  notify: Reload prometheus

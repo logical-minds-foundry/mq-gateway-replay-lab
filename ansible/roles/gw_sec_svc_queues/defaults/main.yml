@@ -54,4 +54,4 @@ gw_sec_responder_group: ""
 # +get +inq to consume the landing queue, +put to route replies back to us.
 gw_sec_svc_grants:
   - { group: "{{ gw_sec_responder_group }}", object: "{{ q_instruct }}", authorities: "+get +inq" }
-  - { group: "{{ gw_sec_responder_group }}", object: "{{ q_reply }}",     authorities: "+put" }
+  - { group: "{{ gw_sec_responder_group }}", object: "{{ q_reply }}", authorities: "+put" }

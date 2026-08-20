@@ -99,7 +99,7 @@
     marker: "# {mark} gwlab-swift scrape job (added by the gateway parasite)"
     block: "  - job_name: gwlab-swift\n    file_sd_configs:\n      - files: [\"{{ gw_prometheus_targets_dir }}/gwlab-swift.json\"]\n"
   become: true
-  notify: reload prometheus
+  notify: Reload prometheus
 
 # --- the Grafana board --------------------------------------------------------
 - name: Deploy the swift settlement board into Grafana
@@ -154,4 +154,4 @@
     block: "    - {{ gw_sec_audit_queue_pattern }}\n"
   become: true
   delegate_to: "{{ gw_sec_mq_exporter_host }}"
-  notify: restart mq exporter
+  notify: Restart mq exporter

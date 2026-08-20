@@ -25,7 +25,8 @@
 - name: Define the audit QLOCALs (retained-original instructions + response ledger; multi-day CAPEXPRY)
   ansible.builtin.shell: |
     set -o pipefail
-    printf "DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE MAXDEPTH({{ gw_sec_max_depth }}) CAPEXPRY({{ gw_sec_capexpry }}) REPLACE\n" {{ gw_sec_audit_queues | join(' ') }} \
+    printf "DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE MAXDEPTH({{ gw_sec_max_depth }}) CAPEXPRY({{ gw_sec_capexpry }}) REPLACE\n" \
+      {{ gw_sec_audit_queues | join(' ') }} \
       | /opt/mqm/bin/runmqsc {{ qmgr_name }}
   args:
     executable: /bin/bash

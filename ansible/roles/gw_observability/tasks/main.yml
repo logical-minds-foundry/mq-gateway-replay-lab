@@ -104,7 +104,7 @@
     marker: "# {mark} gwlab scrape job (added by the gateway parasite)"
     block: "  - job_name: gwlab\n    file_sd_configs:\n      - files: [\"{{ gw_prometheus_targets_dir }}/gwlab.json\"]\n"
   become: true
-  notify: reload prometheus
+  notify: Reload prometheus
 
 # --- the per-QM boards (co-located with each QM's stack cockpit board) ---------
 - name: Deploy the gateway boards into each queue manager's folder
