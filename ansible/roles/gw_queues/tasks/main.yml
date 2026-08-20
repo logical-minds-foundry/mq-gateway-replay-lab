@@ -1,0 +1,115 @@
+---
+- name: Assert the target queue manager name was provided
+  ansible.builtin.assert:
+    that:
+      - qmgr_name is defined
+      - qmgr_name | length > 0
+    fail_msg: >-
+      qmgr_name must be set to the lab's running queue manager. gw_queues owns
+      only its own GW.* queues; it never creates or mutates the queue manager.
+
+- name: Verify the queue manager is running (declare-and-verify; never create it)
+  ansible.builtin.command: /opt/mqm/bin/dspmq -m {{ qmgr_name }}
+  become: true
+  become_user: mqm
+  register: dspmq
+  changed_when: false
+  failed_when: dspmq.rc != 0 or 'Running' not in dspmq.stdout
+
+# --- our own GW.* objects (the remote model, issue #56) ------------------------
+# REPLACE makes every DEFINE below converge to the desired attributes on each
+# apply rather than error on "already exists" — idempotency here means
+# "same state after every run", not "no-op after the first run".
+
+- name: Define the audit QLOCALs (retained-original outbound + inbound ledger; CAPEXPRY-capped)
+  ansible.builtin.shell: |
+    set -o pipefail
+    printf "DEFINE QLOCAL(%s) DEFPSIST(YES) SHARE MAXDEPTH({{ gw_max_depth }}) CAPEXPRY({{ gw_audit_capexpry }}) REPLACE\n" {{ gw_audit_queues | join(' ') }} \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_audits
+  changed_when: "'AMQ8006' in define_audits.stdout"
+  failed_when: define_audits.rc != 0
+
+- name: Define the app reply QLOCAL (drained by the responder's reply put)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QLOCAL('{{ q_reply }}') DEFPSIST(YES) SHARE MAXDEPTH({{ gw_max_depth }}) REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_reply
+  changed_when: "'AMQ8006' in define_reply.stdout"
+  failed_when: define_reply.rc != 0
+
+- name: Define the QALIAS (the app's transparent put target)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QALIAS('{{ q_request }}') TARGET('{{ q_request_audit }}') REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_alias
+  changed_when: "'AMQ8006' in define_alias.stdout"
+  failed_when: define_alias.rc != 0
+
+- name: Define the QREMOTE (stream target -> counterparty landing, over the existing XMITQ)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DEFINE QREMOTE('{{ q_request_remote }}') RNAME('{{ q_request }}') RQMNAME('{{ svc_qmgr }}') XMITQ('{{ svc_qmgr }}') REPLACE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: define_remote
+  changed_when: "'AMQ8006' in define_remote.stdout"
+  failed_when: define_remote.rc != 0
+
+- name: Stream each live queue to its MUSTDUP target (retained original -> remote landing; reply -> reply audit)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "ALTER QLOCAL({{ item.0 }}) STREAMQ({{ item.1 }}) STRMQOS(MUSTDUP)" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  loop: "{{ gw_streams }}"
+  register: gw_stream
+  changed_when: "'AMQ8008' in gw_stream.stdout"
+  failed_when: gw_stream.rc not in [0, 10]
+
+# --- the existing inter-QM link (the lab's) — declare-and-verify, never create -
+- name: Declare-and-verify the existing XMITQ to the counterparty (parasite boundary; fail loudly if absent)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY QLOCAL('{{ svc_qmgr }}') USAGE" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: verify_xmitq
+  changed_when: false
+  failed_when: verify_xmitq.rc != 0 or 'USAGE(XMITQ)' not in verify_xmitq.stdout
+
+- name: Declare-and-verify the existing channel to the counterparty (parasite boundary; fail loudly if absent)
+  ansible.builtin.shell: |
+    set -o pipefail
+    echo "DISPLAY CHANNEL('{{ qmgr_name }}.{{ svc_qmgr }}')" \
+      | /opt/mqm/bin/runmqsc {{ qmgr_name }}
+  args:
+    executable: /bin/bash
+  become: true
+  become_user: mqm
+  register: verify_channel
+  changed_when: false
+  failed_when: verify_channel.rc != 0 or 'CHANNEL(' not in verify_channel.stdout

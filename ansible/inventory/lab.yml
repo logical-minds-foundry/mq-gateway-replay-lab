@@ -1,5 +1,5 @@
 ---
-# Inventory for applying gw-queues against the RUNNING lab queue manager.
+# Inventory for applying gw_queues against the RUNNING lab queue manager.
 #
 # Provide the live values at apply time — there are deliberately no misleading
 # defaults for the queue manager, so a mis-targeted apply fails loudly rather
@@ -16,7 +16,7 @@ gateway_qm:
   vars:
     counterparty: CPB
 
-# The obs node (Prometheus + Grafana) from which gw-observability deploys the
+# The obs node (Prometheus + Grafana) from which gw_observability deploys the
 # targets file and the boards; it delegates the exporter service to
 # gw_exporter_host. Set gw_obs_host / gw_exporter_host / gw_exporter_qmgr /
 # gw_exporter_conn at apply time (no misleading defaults for the live topology).
@@ -29,7 +29,7 @@ gateway_obs:
 
 # The counterparty's own queue manager (SVCQM), reached over the lab's
 # EXISTING inter-QM link (issue #56). This is the only group that targets a
-# box other than our own queue manager; gw-svc-queues still only creates its
+# box other than our own queue manager; gw_svc_queues still only creates its
 # own GW.* objects there and declare-and-verifies the existing return
 # XMITQ/channel (parasite / boundary rule). Provide qmgr_name (SVCQM's live
 # instance name) and our_qmgr at apply time — no misleading defaults for

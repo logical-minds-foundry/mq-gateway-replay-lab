@@ -1,0 +1,24 @@
+---
+# ansible-lint runs under the 'production' profile (see vrg-validate).
+#
+# var-naming[no-role-prefix] requires every role-defined variable to be
+# prefixed with its own role's name (gw_observability_exporter_host rather
+# than gw_exporter_host). The rule assumes roles are independently authored
+# units that happen to share one global namespace, so a prefix is the only
+# thing keeping them from colliding.
+#
+# These seven roles are not that. They are one cohesive bolt-on, and they
+# share a gw_ / gw_sec_ namespace on purpose: svc_qmgr, q_reply, q_instruct,
+# counterparty and the whole gw_venv / gw_python / gw_key_repo runtime layout
+# are each defined by two-to-four roles with the same meaning, and site.yml
+# passes variables between plays on that basis. Per-role prefixes would
+# replace the shared definitions with duplicated copies of identical values
+# and rename the documented apply-time interface in ansible/README.md.
+#
+# The rule was not previously reported: the role directories used hyphens, so
+# role-name rejected them and ansible-lint could not derive an expected prefix
+# to check against. Fixing role-name (issue #276) surfaced 152 of these. The
+# exemption is therefore explicit here rather than an accident of a name the
+# linter refused to parse.
+skip_list:
+  - var-naming[no-role-prefix]

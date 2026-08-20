@@ -212,7 +212,7 @@ missing round-trip is a precondition failure to surface, not to work around.
 
 Steps:
 
-1. **Provision the report queue we own.** Deploy the `gw-sec-queues` role to create
+1. **Provision the report queue we own.** Deploy the `gw_sec_queues` role to create
    `GW.SEC.REPORT` (terminal QLOCAL, CAPEXPRY on the SEC horizon). Confirm it did not
    touch the QM or SVCQM (config diff = the transparency proof, spec §11). Confirm
    `GW.SEC.REPORT` is empty before the run.
