@@ -1162,6 +1162,26 @@ assumed.
      not promise that business events arrive in business order — and a
      content-opaque gateway never surfaces it to the application anyway.
 
+   *Sourced from* — read directly, and the **scope of the negative findings**.
+   Two of the three conclusions above are negatives ("no such field", "no such
+   rule"), and a negative is only as strong as the stated extent of the search.
+   These findings are scoped to these publications at these editions, and
+   nothing broader:
+
+   - *FIN System Messages* (`ufsm`), 2026-07-17 edition
+   - *FIN Error Codes* (`ufec`), 2026-07-17 edition
+   - *Standards MT Category 5 — Securities Markets, Message Reference Guide*
+     (`us5mc`), 2026-07-17 edition
+
+   Obtainable from the SWIFT Knowledge Centre,
+   <https://www2.swift.com/knowledgecentre/>. Direct links are deliberately
+   omitted: the deep URLs are session-gated and do not resolve for an
+   unauthenticated reader, so a title, publication code and edition date are
+   more durable than a link that will fail. **Edition dates are load-bearing** —
+   these are versioned publications reissued on a schedule, so "no such rule
+   exists in the 2026-07-17 Category 5 guide" stays true permanently, whereas
+   "no such rule exists" would quietly rot.
+
    *Consequences:* ordering must derive from **status semantics**, never from a
    timestamp sort (§5.2); the receiver must **tolerate arbitrary advice order**
    and absorb an early status rather than report it (§5.3); and the design's
