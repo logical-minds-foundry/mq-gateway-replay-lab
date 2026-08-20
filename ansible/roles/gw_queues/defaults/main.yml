@@ -26,7 +26,7 @@ q_reply_audit: "GW.{{ counterparty }}.REPLY.AUDIT"
 # is unchanged: q_reply STREAMQ's to q_reply_audit.
 #
 # Per the parasite / boundary rule these QLOCAL/QALIAS/QREMOTE objects are the
-# ONLY MQ objects gw-queues creates; the queue manager, the counterparty QM,
+# ONLY MQ objects gw_queues creates; the queue manager, the counterparty QM,
 # and the inter-QM transmission queue + channel belong to the lab and are
 # declare-and-verified, never mutated.
 

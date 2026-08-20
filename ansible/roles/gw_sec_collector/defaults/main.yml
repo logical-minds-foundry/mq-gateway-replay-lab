@@ -1,5 +1,5 @@
 ---
-# gw-sec-collector — install the streaming settlement collector as a REAL
+# gw_sec_collector — install the streaming settlement collector as a REAL
 # installed artifact on the monitoring probe (epic #65, streaming-collector
 # design §9). The production end-state is "installed built artifact + stable
 # entry point", NOT "source tree + PYTHONPATH": build a wheel from this repo,

@@ -1,5 +1,5 @@
 ---
-# gw-sec-collector deploy — run the installed collector as a supervised client-mode
+# gw_sec_collector deploy — run the installed collector as a supervised client-mode
 # systemd unit on the monitoring probe and publish its FIXED Prometheus scrape
 # target (epic #65, streaming-collector design §8/§8.1). Same deployment shape as
 # the base mq-exporter: a client on mon-probe, NOT a QM-node service. The scrape

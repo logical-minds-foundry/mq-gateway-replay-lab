@@ -1,6 +1,6 @@
 ---
 # Their side of the remote object model (issue #56): applied to SVCQM, the
-# counterparty's own queue manager. Mirrors gw-queues' conventions exactly —
+# counterparty's own queue manager. Mirrors gw_queues' conventions exactly —
 # same assert/verify/runmqsc pattern — but this role's "own" objects live on
 # the counterparty's box, not ours: it creates ONLY the landing queue and the
 # reply route back to us, and declare-and-verifies the existing return
@@ -29,7 +29,7 @@ our_qmgr: ""
 q_request: "GW.{{ counterparty }}.REQUEST"
 q_reply: "GW.{{ counterparty }}.REPLY"
 
-# Sizing for production-scale volume — same rationale as gw-queues: the
+# Sizing for production-scale volume — same rationale as gw_queues: the
 # default MAXDEPTH(5000) is far too small for a day of traffic at scale, and
 # the single queue-file limit is not a concern (MAXFSIZE(DEFAULT) ~2 TB).
 gw_max_depth: 999999999

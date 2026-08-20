@@ -1,12 +1,12 @@
 ---
 # Their side of the SWIFT securities-settlement (v2) remote model (epic #65):
 # applied to SVCQM, the counterparty's own queue manager. The their-side half of
-# the GW.SEC.* round-trip, mirroring gw-svc-queues (the v1 their-side role)
+# the GW.SEC.* round-trip, mirroring gw_svc_queues (the v1 their-side role)
 # exactly — same assert/verify/runmqsc pattern — but this role's "own" objects
 # live on the counterparty's box, not ours: it creates ONLY the landing queue our
 # streamed instructions arrive on and the reply route back to us, and
 # declare-and-verifies the existing return XMITQ/channel (parasite / boundary
-# rule; never touches anything else on SVCQM). Names match gw-sec-queues.
+# rule; never touches anything else on SVCQM). Names match gw_sec_queues.
 
 # svc_qmgr names this queue manager as it appears in the inter-QM link (the
 # first half of the return channel name below). Defaulted because it is a
@@ -20,7 +20,7 @@ svc_qmgr: SVCQM
 # silently wires the reply route to the wrong box.
 our_qmgr: ""
 
-# Named queues (match gw-sec-queues, as seen from SVCQM):
+# Named queues (match gw_sec_queues, as seen from SVCQM):
 # - q_instruct is OUR landing queue on SVCQM — the responder's own consumer
 #   reads it locally; this role only provisions the QLOCAL it lands on. It is
 #   the RNAME target of our-side GW.SEC.INSTRUCT.REMOTE QREMOTE.
@@ -28,7 +28,7 @@ our_qmgr: ""
 q_instruct: "GW.SEC.INSTRUCT"
 q_reply: "GW.SEC.REPLY"
 
-# Sizing for production-scale volume — same rationale as gw-sec-queues: the
+# Sizing for production-scale volume — same rationale as gw_sec_queues: the
 # default MAXDEPTH(5000) is far too small for a settlement horizon of traffic,
 # and the single queue-file limit is not a concern (MAXFSIZE(DEFAULT) ~2 TB).
 gw_sec_max_depth: 999999999
@@ -42,7 +42,7 @@ gw_sec_max_depth: 999999999
 # principal. Scoped to the objects THIS role owns on SVCQM — the landing QLOCAL
 # the responder consumes (q_instruct) and the reply QREMOTE it puts to (q_reply).
 # The mqsvc +put+setall grant on GW.SEC.REPLY (our QM) is NOT here: GW.SEC.REPLY
-# is owned by gw-sec-queues and that grant is handled in its role (issue #241).
+# is owned by gw_sec_queues and that grant is handled in its role (issue #241).
 #
 # gw_sec_responder_group is the SVC.SVRCONN Stage-2 identity on SVCQM — the
 # account the counterparty responder connects as. Intentionally unset: no

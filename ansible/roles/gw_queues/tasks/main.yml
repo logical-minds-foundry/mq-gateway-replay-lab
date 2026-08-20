@@ -5,7 +5,7 @@
       - qmgr_name is defined
       - qmgr_name | length > 0
     fail_msg: >-
-      qmgr_name must be set to the lab's running queue manager. gw-queues owns
+      qmgr_name must be set to the lab's running queue manager. gw_queues owns
       only its own GW.* queues; it never creates or mutates the queue manager.
 
 - name: Verify the queue manager is running (declare-and-verify; never create it)

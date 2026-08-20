@@ -5,7 +5,7 @@
       - qmgr_name is defined
       - qmgr_name | length > 0
     fail_msg: >-
-      qmgr_name must be set to the lab's running queue manager. gw-sec-queues
+      qmgr_name must be set to the lab's running queue manager. gw_sec_queues
       owns only its own GW.SEC.* queues; it never creates or mutates the queue
       manager.
 

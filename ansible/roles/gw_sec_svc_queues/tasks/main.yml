@@ -6,7 +6,7 @@
       - qmgr_name | length > 0
     fail_msg: >-
       qmgr_name must be set to the counterparty's running queue manager
-      (SVCQM). gw-sec-svc-queues owns only its own GW.SEC.* objects on that box;
+      (SVCQM). gw_sec_svc_queues owns only its own GW.SEC.* objects on that box;
       it never creates or mutates the queue manager.
 
 - name: Assert our own queue manager name was provided
@@ -31,7 +31,7 @@
 # --- their own GW.SEC.* objects (the remote model, epic #65) -------------------
 # REPLACE makes every DEFINE below converge to the desired attributes on each
 # apply rather than error on "already exists" — idempotency here means "same
-# state after every run", not "no-op after the first run" — see gw-sec-queues.
+# state after every run", not "no-op after the first run" — see gw_sec_queues.
 
 - name: Define the landing QLOCAL (our instructions land here; the responder consumes it)
   ansible.builtin.shell: |
@@ -90,7 +90,7 @@
 # Grant the responder's Stage-2 identity least privilege on the SVCQM objects
 # this role owns: +get +inq on the landing queue, +put on the reply route. The
 # mqsvc +put+setall grant on GW.SEC.REPLY (our QM) is handled in issue #241
-# (gw-sec-queues owns that queue). Mirrors the base lab's setmqaut -g mechanism.
+# (gw_sec_queues owns that queue). Mirrors the base lab's setmqaut -g mechanism.
 
 - name: Assert the responder Stage-2 group was provided
   ansible.builtin.assert:

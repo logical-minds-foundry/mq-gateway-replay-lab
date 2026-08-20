@@ -1,5 +1,5 @@
 ---
-# The SWIFT securities-settlement (v2) audit flow. Parallel to gw-queues (the v1
+# The SWIFT securities-settlement (v2) audit flow. Parallel to gw_queues (the v1
 # request/reply flow), but for MT540-548 body-parsing: the same proven streaming
 # remote model (issue #56) with its own GW.SEC.* objects and a MULTI-DAY audit
 # retention window, because a settlement lifecycle spans days (epic #65 spec
@@ -27,7 +27,7 @@ q_status_audit: "GW.SEC.STATUS.AUDIT"
 # Inbound: q_reply STREAMQ's to q_status_audit.
 #
 # Per the parasite / boundary rule these QLOCAL/QALIAS/QREMOTE objects are the
-# ONLY MQ objects gw-sec-queues creates; the queue manager, the counterparty QM,
+# ONLY MQ objects gw_sec_queues creates; the queue manager, the counterparty QM,
 # and the inter-QM transmission queue + channel belong to the lab and are
 # declare-and-verified, never mutated.
 

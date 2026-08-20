@@ -414,7 +414,7 @@ the base lab's mechanism throughout; we mirror its `authz.yml` grant-map shape.
 ### 13.2 The grant model
 
 Each identity holds only what its role needs. The grants this epic adds on the
-objects `gw-sec-queues` / `gw-sec-svc-queues` own:
+objects `gw_sec_queues` / `gw_sec_svc_queues` own:
 
 | Group (via) | Object | Authorities | Explicitly NOT |
 |---|---|---|---|
@@ -473,8 +473,8 @@ The split follows the corrected self-owning-bolt-on rule (CLAUDE.md, epic #234):
   `CHLAUTH(ENABLED)`, channels resolve to the non-privileged accounts, **not**
   `mqm`). A residual `mqm` identity is a **loud stop**, never a silent widening.
 - **We own only the `GW.SEC.*` grants** — the `setmqaut -g` grants in the table
-  above, 100% automated by this repo's Ansible (`gw-sec-queues`,
-  `gw-sec-svc-queues`) and replayable on a from-scratch rebuild.
+  above, 100% automated by this repo's Ansible (`gw_sec_queues`,
+  `gw_sec_svc_queues`) and replayable on a from-scratch rebuild.
 
 ### 13.5 Browse-only, now enforced and proven
 

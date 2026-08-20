@@ -1,5 +1,5 @@
 ---
-# v2 SWIFT settlement observability — parallel to gw-observability (v1), on a
+# v2 SWIFT settlement observability — parallel to gw_observability (v1), on a
 # DISTINCT port so the two run side by side (spec §7). The exporter runs the swift
 # serve module client-mode against the app queue manager and is scraped by
 # Prometheus; a Grafana board (built by gwlab.swift.board, deployed by
@@ -18,7 +18,7 @@ gw_sec_horizon_days: 3
 # The exporter host (MQ client + reachability to the QM listener).
 gw_sec_exporter_host: mon-probe
 
-# Reused runtime (same venv/source/keystore layout as gw-observability, so the two
+# Reused runtime (same venv/source/keystore layout as gw_observability, so the two
 # roles co-exist idempotently on the exporter host).
 gw_venv: /opt/gwlab-venv
 gw_python: "{{ gw_venv }}/bin/python"
