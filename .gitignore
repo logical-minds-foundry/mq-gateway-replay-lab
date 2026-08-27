@@ -1,41 +1,50 @@
-# Editors
+# >>> vergil-managed: base + python (managed by vrg-gitignore-sync; do not edit) >>>
 *.swp
 *.swo
 *~
+*.bak
 .idea/
 .vscode/
-
-# OS
 .DS_Store
 Thumbs.db
-
-# Vergil
-.venv-host/
+.env
+.env.*
+*.log
+.venv/
 .worktrees/
 .vergil/
 .superpowers/
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
 build/
-
-# Python
+dist/
+coverage.xml
+junit.xml
+licenses.json
+docs/site/site/
+node_modules/
 __pycache__/
-*.py[cod]
-.venv/
-*.egg-info/
+*.pyc
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+*.egg-info/
 .coverage
+pip-audit.json
+quality-ruff.json
+quality-mypy.xml
+# <<< vergil-managed <<<
+
+# Vergil
+.venv-host/
+
+# Python
+*.py[cod]
 .coverage.*
 htmlcov/
 
 # Test/coverage/report artifacts. The tool caches (.pytest_cache, .mypy_cache,
 # .ruff_cache, .venv) self-ignore via a tool-written .gitignore inside each dir;
 # these report files do NOT, so vrg-validate leaks them to the repo root.
-coverage.xml
 coverage.json
-junit.xml
-licenses.json
-pip-audit.json
-quality-mypy.xml
-quality-ruff.json
 .ty_cache/
