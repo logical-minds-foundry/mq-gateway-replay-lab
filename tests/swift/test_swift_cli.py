@@ -11,7 +11,7 @@ injected instant, so nothing reads the wall clock.
 """
 
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -22,6 +22,9 @@ from gwlab.swift.collect import collect
 from gwlab.swift.observe import Metrics, metrics
 from gwlab.swift.simulation import run_window
 from gwlab.swift.swiftconfig import Horizon, SwiftQueueSet
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 #: A fixed reporting instant; ``start`` sits exactly a horizon before it so the
 #: demonstrator's offset-0 instruction is both in-window and (if non-terminal) aged

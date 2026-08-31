@@ -1,12 +1,14 @@
 """Tests for the code-templated, QM-agnostic, mockup-faithful dashboard generator."""
 
 import json
-
-import pytest
+from typing import TYPE_CHECKING
 
 from gwlab import cli
 from gwlab.config import QueueSet
 from gwlab.dashboard import build_dashboard
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _exprs(dashboard: dict) -> list[str]:

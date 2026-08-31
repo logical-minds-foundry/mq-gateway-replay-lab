@@ -1,7 +1,7 @@
 [project]
 name = "gwlab"
 version = "0.1.0"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 license = "MIT"
 license-files = ["LICENSE"]
 dependencies = []
@@ -21,7 +21,7 @@ build-backend = "hatchling.build"
 packages = ["src/gwlab"]
 
 [tool.ruff]
-target-version = "py312"
+target-version = "py314"
 line-length = 100
 
 [tool.ruff.lint]
@@ -32,7 +32,7 @@ select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "SIM", "TCH", "ARG
 "tests/**" = ["S101", "S106", "S603", "S607", "ARG", "E402"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.14"
 strict = true
 warn_return_any = true
 warn_unused_configs = true
