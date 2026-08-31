@@ -23,16 +23,16 @@ jobs:
     uses: vergil-project/vergil-actions/.github/workflows/ci-audit.yml@v2.1
     with:
       language: python
-      versions: '["3.12"]'
-      container-tag: '3.12'
+      versions: '["3.14"]'
+      container-tag: '3.14'
       container-suffix: python
 
   quality:
     uses: vergil-project/vergil-actions/.github/workflows/ci-quality.yml@v2.1
     with:
       language: python
-      versions: '["3.12"]'
-      container-tag: '3.12'
+      versions: '["3.14"]'
+      container-tag: '3.14'
       container-suffix: python
 
   security:
@@ -52,15 +52,15 @@ jobs:
       # See vergil-project/vergil-actions#693; to enable GHAS later
       # see docs/specs/2026-06-06-ghas-posture-design.md.
       upload-sarif: false
-      container-tag: '3.12'
+      container-tag: '3.14'
       container-suffix: python
 
   test:
     uses: vergil-project/vergil-actions/.github/workflows/ci-test.yml@v2.1
     with:
       language: python
-      versions: '["3.12"]'
-      container-tag: '3.12'
+      versions: '["3.14"]'
+      container-tag: '3.14'
       container-suffix: python
 
   version:
@@ -68,7 +68,7 @@ jobs:
     with:
       language: python
       run-release: ${{ inputs.run-release != 'false' }}
-      container-tag: '3.12'
+      container-tag: '3.14'
       container-suffix: python
 
   docs:
