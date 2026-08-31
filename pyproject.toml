@@ -11,7 +11,7 @@ gwlab = "gwlab.cli:main"
 gwlab-collector = "gwlab.swift.stream.serve_collector:main"
 
 [dependency-groups]
-dev = ["ruff", "mypy", "ty", "pytest", "pytest-cov", "pip-audit", "pip-licenses"]
+dev = ["ruff", "mypy", "ty", "pytest", "pytest-cov", "pip-audit", "pip-licenses", "pytest-xdist"]
 
 [build-system]
 requires = ["hatchling"]
