@@ -1,12 +1,15 @@
 """Tests for the Prometheus exposition."""
 
-from collections.abc import Callable
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from gwlab.config import QueueSet
 from gwlab.exporter import render
 from gwlab.fake_messaging import FakeMessaging
 from gwlab.messaging import Message
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 QS = QueueSet.for_counterparty("CPB")
 NOW = datetime(2026, 7, 8, 16, 20, 0)  # noqa: DTZ001 — injected clock, deterministic
