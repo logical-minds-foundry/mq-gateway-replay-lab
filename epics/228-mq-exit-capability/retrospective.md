@@ -33,9 +33,9 @@ to the gateway/replay direction now being retired.
 ## §1 How the plan evolved
 
 No execution phase — the delta is again total: a planned capability that never
-reached code. The epic existed to answer a specific, real question left open by
-#105 (streaming strips report options from the streamed copy, so COA/COD cannot
-ride the streaming-audit design non-intrusively) — a message exit was the
+reached code. The epic existed to answer a specific, real question that epic #105
+had left open (streaming strips report options from the streamed copy, so COA/COD
+cannot ride the streaming-audit design non-intrusively) — a message exit was the
 candidate escape hatch. The strategic refocus behind wind-down #245 removed the
 reason to pursue it: without the gateway/replay follow-on, a bespoke exit example
 has no home.
