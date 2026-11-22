@@ -43,11 +43,6 @@ jobs:
       language: python
       run-standards: ${{ inputs.run-release != 'false' }}
       run-security: ${{ inputs.run-security != 'false' }}
-      # Private repo without GHAS: scanners gate via exit codes,
-      # SARIF is kept as build artifacts, and CodeQL is skipped.
-      # See vergil-project/vergil-actions#693; to enable GHAS later
-      # see docs/specs/2026-06-06-ghas-posture-design.md.
-      upload-sarif: false
       container-suffix: python
 
   test:
